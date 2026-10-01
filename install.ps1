@@ -70,7 +70,17 @@ if ((Test-Path $dest) -and -not $Force) {
     }
 }
 Copy-Item $src $dest -Force
-Write-Host "  Copied ask.ps1 -> $dest" -ForegroundColor Green
+
+# Stamp commit and install time into the installed copy (shown by ask --version).
+$commit = git -C $PSScriptRoot rev-parse --short HEAD 2>$null
+if (-not $commit) { $commit = "unknown commit" }
+elseif (git -C $PSScriptRoot status --porcelain 2>$null) { $commit += "-dirty" }
+$stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"
+$text  = [System.IO.File]::ReadAllText($dest)
+$text  = $text -replace '(?m)^\$AskCommit\s*=\s*"[^"]*"',    "`$AskCommit    = ""$commit"""
+$text  = $text -replace '(?m)^\$AskInstalled\s*=\s*"[^"]*"', "`$AskInstalled = ""$stamp"""
+[System.IO.File]::WriteAllText($dest, $text)
+Write-Host "  Copied ask.ps1 -> $dest ($commit, $stamp)" -ForegroundColor Green
  
 # ── PATH ──────────────────────────────────────────────────────────────────────
  
@@ -119,8 +129,23 @@ Write-Host "  ──────────────────────
 Write-Host "  Press Enter to accept the default shown in [brackets]."
 Write-Host ""
  
+# Existing config supplies the defaults, so re-running the installer keeps
+# your settings (and any keys it doesn't prompt for, e.g. history, tools).
+$configPath = Join-Path $HOME ".ask.json"
+$existing = [ordered]@{}
+if (Test-Path $configPath) {
+    try {
+        $j = Get-Content $configPath -Raw | ConvertFrom-Json
+        foreach ($p in $j.PSObject.Properties) { $existing[$p.Name] = $p.Value }
+    } catch { }
+}
+function Get-Existing([string]$key, $fallback) {
+    if ($existing.Contains($key) -and $null -ne $existing[$key]) { return [string]$existing[$key] }
+    return $fallback
+}
+
 # Discover available Ollama models for the prompt hint
-$modelHint = "dolphin-8b:latest"
+$modelHint = Get-Existing "model" "dolphin-llama3:8b"
 try {
     $ollamaOut = & ollama list 2>$null | Select-Object -Skip 1
     $models = $ollamaOut | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ -ne "" }
@@ -128,28 +153,33 @@ try {
         Write-Host "  Available Ollama models:" -ForegroundColor DarkGray
         $models | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         Write-Host ""
-        # Prefer dolphin-8b if present, otherwise first in list
-        $modelHint = if ($models -contains "dolphin-8b:latest") { "dolphin-8b:latest" } else { $models[0] }
+        # Keep the configured model if it's installed; otherwise prefer a
+        # reasonably capable one (tool support first), never just the first
+        # listed -- that picked gemma2:2b, too small to answer usefully.
+        if ($models -notcontains $modelHint) {
+            $preferred = @("dolphin-llama3:8b", "qwen2.5-coder:7b", "qwen2.5:7b", "llama3.1:8b",
+                           "nous-hermes2:latest", "dolphin-mistral:latest")
+            $pick = $preferred | Where-Object { $models -contains $_ } | Select-Object -First 1
+            $modelHint = if ($pick) { $pick } else { $models[0] }
+        }
     }
 } catch {
     Write-Host "  (Could not query ollama list -- enter model name manually)" -ForegroundColor DarkGray
 }
  
 $cfgModel      = Prompt-WithDefault "  Default model      " $modelHint
-$cfgHost       = Prompt-WithDefault "  Ollama host        " "127.0.0.1"
-$cfgPortDirect = Prompt-WithDefault "  Ollama port        " "11434"
-$cfgPortServe  = Prompt-WithDefault "  cppcoder port      " "8765"
-$cfgSystem     = Prompt-WithDefault "  System prompt      " ""
+$cfgHost       = Prompt-WithDefault "  Ollama host        " (Get-Existing "host" "127.0.0.1")
+$cfgPortDirect = Prompt-WithDefault "  Ollama port        " (Get-Existing "port_direct" "11434")
+$cfgPortServe  = Prompt-WithDefault "  cppcoder port      " (Get-Existing "port_serve" "8765")
+$cfgSystem     = Prompt-WithDefault "  System prompt      " (Get-Existing "system" "")
  
-$config = [ordered]@{
-    model        = $cfgModel
-    host         = $cfgHost
-    port_direct  = [int]$cfgPortDirect
-    port_serve   = [int]$cfgPortServe
-    system       = $cfgSystem
-}
+$config = $existing
+$config["model"]       = $cfgModel
+$config["host"]        = $cfgHost
+$config["port_direct"] = [int]$cfgPortDirect
+$config["port_serve"]  = [int]$cfgPortServe
+$config["system"]      = $cfgSystem
  
-$configPath = Join-Path $HOME ".ask.json"
 $config | ConvertTo-Json | Set-Content $configPath
 Write-Host ""
 Write-Host "  Wrote $configPath" -ForegroundColor Green

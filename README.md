@@ -166,6 +166,11 @@ ask explain templates -NoStream
 | `-NewChat`    | off                  | Clear history, then start a fresh thread with this question |
 | `-NoHistory`  | off                  | One-shot -- don't read or write history for this call     |
 | `-ClearHistory` |                    | Wipe history and exit, without asking anything            |
+| `-v`, `--verbose` | off        | Ask for a thorough explanation with examples              |
+| `-Tools`      | off                  | Let the model browse, read files and run commands         |
+| `-NoTools`    | off                  | Tools off for this call (when on in config)               |
+| `-Help`, `--help`, `-h` |            | Print a usage summary, then exit                          |
+| `-Version`, `--version` |            | Print version, commit and install time, then exit         |
 | `-Models`     |                      | List models available on the Ollama server, then exit    |
 
 ---
@@ -181,11 +186,39 @@ ask explain templates -NoStream
     "port_direct": 11434,
     "port_serve":  8765,
     "system":      "",
-    "history":     true
+    "history":     true,
+    "tools":       false,
+    "tool_output_chars": 8000
 }
 ```
 
 CLI parameters always override config for that run.
+
+---
+
+## Tools
+
+Off by default. With `-Tools` (or `"tools": true` in config) the model can
+act, not just talk:
+
+| Tool          | Does                                                   |
+|---------------|--------------------------------------------------------|
+| `fetch_url`   | Downloads a page and hands its text to the model       |
+| `open_url`    | Opens a URL in your default browser                    |
+| `read_file`   | Reads a local text file                                |
+| `run_command` | Runs a PowerShell command and returns its output       |
+
+```powershell
+ask -Tools browse old.reddit.com            # opens it in your browser
+ask -Tools summarise https://example.com    # fetches and summarises
+ask -Tools how much free space is on C:     # runs a command
+```
+
+Each tool call is echoed in grey (`> run: ...`). **Commands run without
+confirmation**, with your user's permissions. Models that advertise tool
+support in Ollama use native tool calling; others (e.g. dolphin) get a
+text `TOOL {...}` protocol in the system prompt. Tool output is capped at
+`tool_output_chars`. With tools on in config, `-NoTools` turns them off for one call.
 
 ---
 
@@ -197,9 +230,11 @@ everything from that file (capped at the last 20 exchanges) to the next
 request -- so follow-ups like `ask and what about X` actually have the prior
 turns as context, same as a chat UI.
 
-The prior turns are context only: `ask` tells the model to reply to the latest
-question alone, so it doesn't re-answer everything earlier in the thread. Set
-`"history": false` in `~/.ask.json` to turn history off by default.
+History goes to `/api/chat` with proper user/assistant roles, so the model
+treats earlier questions as already answered and only replies to the new one.
+Asking the same question again drops the earlier exchange, so a bad answer
+isn't copied. Set `"history": false` in `~/.ask.json` to turn history off by
+default.
 
 ```powershell
 ask what is CRTP
