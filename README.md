@@ -12,7 +12,9 @@ Built on top of [CppLocalLlmCodeAssist](https://github.com/cschladetsch/CppLocal
 ```powershell
 ask what is the rule of five in C++23
 ask explain CRTP -Model qwen2.5-coder:7b
-ask -SetModel dolphin-8b:latest
+ask -model                  # which model am I using?
+ask-check                   # is Ollama up? (* marks the current model)
+ask -SetModel dolphin-8b:latest
 ```
 
 ---
@@ -94,7 +96,7 @@ cd CppAsk
 
 The installer:
 
-1. Copies `ask.ps1` and `ask-tools.ps1` to `~/bin` (or `-Destination` of your choice)
+1. Copies `ask.ps1`, `ask-tools.ps1` and `ask-check.ps1` to `~/bin` (or `-Destination` of your choice)
 2. Adds `~/bin` to your user `PATH` permanently
 3. Adds a global `ask` function and alias to `$PROFILE`
 4. Queries `ollama list` and prompts for config values
@@ -128,9 +130,17 @@ ask what is the rule of five in C++23
 ask explain brace elision
 ask what does PatchApplier do
 
-# Override model for one run
+# Override model for one run (the tag can go before or after the question)
 ask explain CRTP -Model qwen2.5-coder:7b
-ask write a merge sort in Rust -Model codellama:7b
+ask -Model codellama:7b write a merge sort in Rust
+
+# Show the current model
+ask -model
+ask --model
+
+# Is the server up, and which models are installed?
+ask-check
+ask --check
 
 # Pipe a question in
 "why does CTAD fail here?" | ask
@@ -177,7 +187,8 @@ ask 'what''s the difference between #pragma once and include guards'
 | Parameter     | Default              | Description                                              |
 |---------------|----------------------|----------------------------------------------------------|
 | `Question`    | *(required)*         | Words to ask -- no quotes needed, joined automatically   |
-| `-Model`      | from config          | Ollama model tag                                         |
+| `-Model`      | from config          | Alone: show the current model. With an installed tag before or after the question: use it for this call |
+| `--model`     |                      | Show the current model, then exit                        |
 | `-OllamaHost` | `127.0.0.1`          | Ollama hostname                                          |
 | `-Port`       | `11434`              | Port -- `11434` for Ollama direct, `8765` for cppcoder   |
 | `-Direct`     | `$true`              | Talk straight to Ollama; `$false` routes via cppcoder    |
@@ -194,6 +205,69 @@ ask 'what''s the difference between #pragma once and include guards'
 | `-Help`, `--help`, `-h` |            | Print a usage summary, then exit                          |
 | `-Version`, `--version` |            | Print version, commit and install time, then exit         |
 | `-Models`     |                      | List models available on the Ollama server, then exit    |
+| `-Check`, `--check` |                | Check the server and list models (`*` = current), then exit; same as `ask-check` |
+
+---
+
+## Choosing a model
+
+`ask -model` (or `--model`) prints the model `ask` will use. `-Model <tag>`
+switches model for one call; PowerShell leaves the tag as the first or last
+word of the question, so `ask` checks those against the installed models and
+takes whichever matches. A bare word like `dolphin-8b` also matches
+`dolphin-8b:latest`. With tools on and `tools_model` set, that model is used
+unless `-Model` says otherwise.
+
+```mermaid
+flowchart TD
+    S["ask ... -Model ..."] --> Q{"Any question words?"}
+    Q -->|"no: ask -model / ask --model"| SHOW["print current model\n(and tools_model if set)"]
+    Q -->|yes| T["GET /api/tags"]
+    T --> F{"first word an\ninstalled tag?"}
+    F -->|yes| USE["use it for this call,\ndrop it from the question"]
+    F -->|no| L{"last word an\ninstalled tag?"}
+    L -->|yes| USE
+    L -->|no| ERR["error: -Model needs an\ninstalled tag (see ask -Models)"]
+    N["no -Model"] --> TO{"tools on and\ntools_model set?"}
+    TO -->|yes| TM["tools_model"]
+    TO -->|no| DM["model"]
+```
+
+`ask -SetModel <tag>` changes the default permanently.
+
+---
+
+## Checking the server
+
+`ask-check` and `ask --check` are the same command: they check that Ollama
+answers, list the installed models with `*` in front of the current one and
+`-` in front of the rest, and warn if the current model isn't installed. The
+exit code is 1 when the server can't be reached, so it works in scripts.
+
+```
+Checking Ollama at http://127.0.0.1:11434...
+[OK] Server is running.
+Available models:
+ * dolphin-8b:latest
+ - qwen2.5-coder:7b
+ - qwen2.5:7b
+```
+
+```mermaid
+flowchart TD
+    A["ask-check"] -->|"thin wrapper"| C["ask -Check"]
+    B["ask --check"] --> C
+    C --> R["resolve host/port\n(config or CLI)"]
+    R --> T["GET /api/tags"]
+    T -->|unreachable| F["[FAIL] reason + restart hint\nexit 1"]
+    T -->|ok| L["[OK] list models\n* current, - others"]
+    L --> W{"current model\ninstalled?"}
+    W -->|no| WARN["[WARN] ollama pull hint"]
+    W -->|yes| OK["exit 0"]
+    WARN --> OK
+```
+
+Server options pass through: `ask-check -Port 11435`.
 
 ---
 

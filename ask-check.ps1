@@ -1,12 +1,11 @@
-# ask-check.ps1
-Write-Host "Checking Ollama status..." -ForegroundColor Cyan
+<#
+.SYNOPSIS
+    Check the Ollama server and list its models, with * in front of the
+    current one.  Same as: ask --check
 
-try {
-    $models = (Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -Method Get).models.name
-    Write-Host "[OK] Ollama server is running." -ForegroundColor Green
-    Write-Host "Available models:"
-    foreach ($m in $models) { Write-Host " - $m" }
-} catch {
-    Write-Host "[FAIL] Ollama is down or throwing errors." -ForegroundColor Red
-    Write-Host "Try restarting it: Stop-Process -Name 'ollama' -Force; ollama serve" -ForegroundColor Yellow
-}
+.DESCRIPTION
+    Thin wrapper over ask.ps1 -Check, so there is one implementation.
+    Any ask server options pass through, e.g. ask-check -Port 11435.
+#>
+& (Join-Path $PSScriptRoot "ask.ps1") -Check @args
+exit $LASTEXITCODE

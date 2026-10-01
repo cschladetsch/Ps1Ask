@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Request lifecycle, config resolution, conversation history, and model listing
+description: Request lifecycle, config resolution, model resolution, server check, conversation history, and model listing
 ---
 
 # Architecture
@@ -82,6 +82,43 @@ stateDiagram-v2
     Empty --> [*]
     Idle --> OneShot: ask -NoHistory <question>
     OneShot --> Idle: answered, nothing read or written
+```
+
+## Model resolution
+
+`-Model` is a switch, so a bare `ask -model` can show the current model. When there is a question, the override tag is its first or last word, checked against `/api/tags`:
+
+```mermaid
+flowchart TD
+    S["ask ... -Model ..."] --> Q{"Any question words?"}
+    Q -->|"no: ask -model / ask --model"| SHOW["print current model\n(and tools_model if set)"]
+    Q -->|yes| T["GET /api/tags"]
+    T --> F{"first word an\ninstalled tag?"}
+    F -->|yes| USE["use it for this call,\ndrop it from the question"]
+    F -->|no| L{"last word an\ninstalled tag?"}
+    L -->|yes| USE
+    L -->|no| ERR["error: -Model needs an\ninstalled tag (see ask -Models)"]
+    N["no -Model"] --> TO{"tools on and\ntools_model set?"}
+    TO -->|yes| TM["tools_model"]
+    TO -->|no| DM["model"]
+```
+
+## Server check
+
+`ask-check.ps1` just runs `ask.ps1 -Check`, so `ask-check` and `ask --check` share one implementation:
+
+```mermaid
+flowchart TD
+    A["ask-check"] -->|"thin wrapper"| C["ask -Check"]
+    B["ask --check"] --> C
+    C --> R["resolve host/port\n(config or CLI)"]
+    R --> T["GET /api/tags"]
+    T -->|unreachable| F["[FAIL] reason + restart hint\nexit 1"]
+    T -->|ok| L["[OK] list models\n* current, - others"]
+    L --> W{"current model\ninstalled?"}
+    W -->|no| WARN["[WARN] ollama pull hint"]
+    W -->|yes| OK["exit 0"]
+    WARN --> OK
 ```
 
 ## Model listing

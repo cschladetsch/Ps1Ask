@@ -12,8 +12,24 @@ Built on top of [CppLocalLlmCodeAssist](https://github.com/cschladetsch/CppLocal
 ```powershell
 ask what is the rule of five in C++23
 ask explain CRTP -Model qwen2.5-coder:7b
+ask -model                  # show the current model
+ask-check                   # same as: ask --check
 ask -SetModel dolphin-8b:latest
 ask -Models
+```
+
+## Commands at a glance
+
+```mermaid
+flowchart LR
+    ASK["ask ..."] --> D{"what was asked?"}
+    D -->|"question"| CHAT["stream an answer\n(Markdown)"]
+    D -->|"br url"| BR["open in browser"]
+    D -->|"-model / --model"| M["print current model"]
+    D -->|"--check / ask-check"| C["server status +\nmodels, * = current"]
+    D -->|"-Models"| L["list models"]
+    D -->|"-SetModel tag"| S["save default model"]
+    D -->|"-Tools question"| T["tool loop\n(ask-tools.ps1)"]
 ```
 
 ## How it works
@@ -53,9 +69,9 @@ cd CppAsk
 .\install.ps1
 ```
 
-The installer copies `ask.ps1` and `ask-tools.ps1` to `~/bin`, adds it to `PATH`, wires up an `ask` alias in `$PROFILE`, queries `ollama list`, and writes `~/.ask.json`.
+The installer copies `ask.ps1`, `ask-tools.ps1` and `ask-check.ps1` to `~/bin`, adds it to `PATH`, wires up an `ask` alias in `$PROFILE`, queries `ollama list`, and writes `~/.ask.json`.
 
-See [Architecture](architecture) for the request lifecycle, config resolution, conversation history, and model listing in detail.
+See [Architecture](architecture) for the request lifecycle, config resolution, model resolution, the server check, conversation history, and model listing in detail.
 
 ## Related
 

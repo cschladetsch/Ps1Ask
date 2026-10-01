@@ -3,7 +3,7 @@
     Installs 'ask' to ~/bin and writes ~/.ask.json with sensible defaults.
  
 .DESCRIPTION
-    1. Copies ask.ps1 and ask-tools.ps1 to the install directory (default: ~/bin)
+    1. Copies ask.ps1, ask-tools.ps1 and ask-check.ps1 to the install directory (default: ~/bin)
     2. Adds the directory to user PATH permanently
     3. Adds a global 'ask' function + alias to $PROFILE
     4. Prompts for config values and writes ~/.ask.json
@@ -78,6 +78,10 @@ if (-not (Test-Path $toolsSrc)) {
     exit 1
 }
 Copy-Item $toolsSrc (Join-Path $Destination "ask-tools.ps1") -Force
+
+# ask-check is a thin wrapper over `ask --check`.
+$checkSrc = Join-Path $PSScriptRoot "ask-check.ps1"
+if (Test-Path $checkSrc) { Copy-Item $checkSrc (Join-Path $Destination "ask-check.ps1") -Force }
 
 # Stamp commit and install time into the installed copy (shown by ask --version).
 $commit = git -C $PSScriptRoot rev-parse --short HEAD 2>$null

@@ -18,7 +18,11 @@
     Can also be piped in.
 
 .PARAMETER Model
-    Ollama model tag.  Overrides config (both "model" and "tools_model").
+    On its own (ask -model), print the current model and exit.  Followed
+    or preceded by an installed model tag, use that model for this call:
+    ask -Model qwen2.5:7b what is CRTP, or ask what is CRTP -Model
+    qwen2.5:7b.  Overrides config (both "model" and "tools_model").
+    Also accepted as --model to show the current model.
 
 .PARAMETER OllamaHost
     Ollama hostname.  Overrides config.
@@ -79,11 +83,18 @@
 .PARAMETER Models
     List models available on the Ollama server, then exit.
 
+.PARAMETER Check
+    Check that the Ollama server is up and list its models, with * in
+    front of the current one, then exit (non-zero if the server is down).
+    Also accepted as --check, and run by the ask-check command.
+
 .EXAMPLE
     ask what is 1+2
     ask explain CRTP in modern C++
     ask 'what''s the difference between std::span and std::string_view'
     ask what does PatchApplier do -Model codellama:7b
+    ask -model
+    ask --check
     ask -SetModel dolphin-8b:latest
     ask br old.reddit.com
     ask -Tools summarise https://example.com
@@ -95,7 +106,10 @@ param(
     [Parameter(Position = 0, ValueFromPipeline = $true, ValueFromRemainingArguments = $true)]
     [string[]] $Question,
 
-    [string] $Model       = "",
+    # A switch, not [string], so a bare `ask -model` can show the current
+    # model. The tag for a one-call override is taken from the question's
+    # first or last word (see "Model override" below).
+    [switch] $Model,
     [string] $OllamaHost  = "",
     [int]    $Port        = 0,
     [switch] $Direct      = $true,
@@ -116,7 +130,8 @@ param(
     [switch] $Explain,
     [Alias("h")]
     [switch] $Help,
-    [switch] $Models
+    [switch] $Models,
+    [switch] $Check
 )
 
 $ErrorActionPreference = "Stop"
@@ -141,7 +156,7 @@ Answering:
   -v, --verbose           ask for a thorough explanation
   -Tools                  let the model browse, read files, run commands
   -NoTools                tools off for this call (if on in config)
-  -Model <tag>            model to use (default from config)
+  -Model <tag>            model to use for this call (installed tag)
   -System <text>          extra system prompt
   -NoStream               buffer the reply before printing
   -NoColor                plain output, no markdown rendering
@@ -159,7 +174,10 @@ Server:
 
 Other:
   br <url>                open a URL in your browser (no model involved)
+  -model, --model         show the current model
   -Models                 list models on the server (* = default)
+  --check, -Check         is the server up? list models (* = current)
+                          (same as the ask-check command)
   -SetModel <tag>         save a new default model
   --version, -Version     version, commit and install time
   --help, -h              this help
@@ -489,12 +507,82 @@ if ($Models) {
     return
 }
 
+# ── Handle --check / -Check (also the ask-check command) ──────────────────────
+# Is the server up, what's installed, and which model is current (*). Exits
+# non-zero when the server can't be reached, so scripts can test it.
+
+if ($Check -or ($Question -contains '--check')) {
+    Write-Host "Checking $serverName..." -ForegroundColor Cyan
+    try {
+        $tagsResp = Invoke-OllamaJson "/api/tags"
+    } catch {
+        Write-Host "[FAIL] $($_.Exception.Message)" -ForegroundColor Red
+        if ($Direct) {
+            Write-Host "Try restarting it: Stop-Process -Name 'ollama' -Force; ollama serve" -ForegroundColor Yellow
+        }
+        exit 1
+    }
+    Write-Host "[OK] Server is running." -ForegroundColor Green
+    $current = $defaults["model"]
+    $names   = @($tagsResp.models | ForEach-Object { $_.name } | Sort-Object)
+    if ($names.Count -eq 0) {
+        Write-Host "No models installed. Try: ollama pull $current" -ForegroundColor Yellow
+        exit 0
+    }
+    Write-Host "Available models:"
+    foreach ($n in $names) {
+        if ($n -eq $current) { Write-Host " * $n" -ForegroundColor Green } else { Write-Host " - $n" }
+    }
+    if ($names -notcontains $current) {
+        Write-Host "[WARN] Current model '$current' is not installed. Try: ollama pull $current" -ForegroundColor Yellow
+    }
+    exit 0
+}
+
 # ── --verbose / -Verbose ──────────────────────────────────────────────────────
 # -Verbose is PowerShell's common parameter (from CmdletBinding); --verbose
 # arrives as a plain word in $Question, so strip it from there.
 
 $verboseMode = $Explain -or $PSBoundParameters.ContainsKey('Verbose') -or ($Question -contains '--verbose')
-$Question    = @($Question | Where-Object { $_ -ne '--verbose' })
+$Question    = @($Question | Where-Object { $_ -and $_ -ne '--verbose' })
+
+# ── Model override / show current model ───────────────────────────────────────
+# -Model is a switch so that `ask -model` on its own can show the current
+# model. With a question, the override tag is its first or last word (where
+# PowerShell leaves the word that followed -Model), checked against the
+# installed models; a word with a ":" counts if the server can't be asked.
+
+$showModel     = ($Model -and $Question.Count -eq 0) -or ($Question.Count -eq 1 -and $Question[0] -eq '--model')
+$modelOverride = ""
+
+if ($showModel) {
+    Write-Host $defaults["model"]
+    if ($defaults["tools_model"] -ne "") {
+        Write-Host "tools_model: $($defaults["tools_model"])" -ForegroundColor DarkGray
+    }
+    return
+}
+
+if ($Model) {
+    $installed = @()
+    try { $installed = @((Invoke-OllamaJson "/api/tags").models | ForEach-Object { $_.name }) } catch { }
+    function Test-ModelTag([string]$w) {
+        if ($installed.Count -eq 0) { return $w -match '^[\w./-]+:[\w.-]+$' }
+        return ($installed -contains $w) -or ($installed -contains "${w}:latest")
+    }
+    $pick = -1
+    if (Test-ModelTag $Question[0]) { $pick = 0 }
+    elseif ($Question.Count -gt 1 -and (Test-ModelTag $Question[-1])) { $pick = $Question.Count - 1 }
+    if ($pick -lt 0) {
+        Stop-Ask ("-Model needs an installed model tag right before or after the question " +
+                  "(neither '$($Question[0])' nor '$($Question[-1])' is one). See: ask -Models")
+    }
+    $modelOverride = $Question[$pick]
+    if ($installed -notcontains $modelOverride -and $installed -contains "${modelOverride}:latest") {
+        $modelOverride = "${modelOverride}:latest"
+    }
+    $Question = @(for ($i = 0; $i -lt $Question.Count; $i++) { if ($i -ne $pick) { $Question[$i] } })
+}
 
 # ── Require a question ────────────────────────────────────────────────────────
 
@@ -532,7 +620,7 @@ if (-not $NoTools -and $questionText -match '^\s*(?:br|open|go\s+to|goto|visit)\
 # so a normal question costs one request, not two.
 
 $toolsOn        = -not $NoTools -and ($Tools -or (Test-AskFlag $defaults["tools"]))
-$effectiveModel = if ($Model -ne "") { $Model }
+$effectiveModel = if ($modelOverride -ne "") { $modelOverride }
                   elseif ($toolsOn -and $defaults["tools_model"] -ne "") { $defaults["tools_model"] }
                   else { $defaults["model"] }
 
