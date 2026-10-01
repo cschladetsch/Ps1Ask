@@ -3,7 +3,7 @@
     Installs 'ask' to ~/bin and writes ~/.ask.json with sensible defaults.
  
 .DESCRIPTION
-    1. Copies ask.ps1 to the install directory (default: ~/bin)
+    1. Copies ask.ps1 and ask-tools.ps1 to the install directory (default: ~/bin)
     2. Adds the directory to user PATH permanently
     3. Adds a global 'ask' function + alias to $PROFILE
     4. Prompts for config values and writes ~/.ask.json
@@ -70,6 +70,14 @@ if ((Test-Path $dest) -and -not $Force) {
     }
 }
 Copy-Item $src $dest -Force
+
+# The tool loop lives in its own file, loaded by ask.ps1 only when tools are on.
+$toolsSrc = Join-Path $PSScriptRoot "ask-tools.ps1"
+if (-not (Test-Path $toolsSrc)) {
+    Write-Error "ask-tools.ps1 not found at $toolsSrc -- run install.ps1 from the repo root."
+    exit 1
+}
+Copy-Item $toolsSrc (Join-Path $Destination "ask-tools.ps1") -Force
 
 # Stamp commit and install time into the installed copy (shown by ask --version).
 $commit = git -C $PSScriptRoot rev-parse --short HEAD 2>$null

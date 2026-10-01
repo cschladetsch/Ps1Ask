@@ -11,7 +11,7 @@ description: Request lifecycle, config resolution, conversation history, and mod
 sequenceDiagram
     participant U as Shell
     participant A as ask.ps1
-    participant C as config.json
+    participant C as ~/.ask.json
     participant H as history.json
     participant O as Ollama /api/chat
 
@@ -26,10 +26,10 @@ sequenceDiagram
     A->>O: POST /api/chat {stream:true}
     loop each NDJSON chunk
         O-->>A: {message:{content:"..."}, done:false}
-        A-->>U: Write-Host -NoNewline token
+        A-->>U: render each completed line as Markdown
     end
     O-->>A: {done:true}
-    A-->>U: newline
+    A-->>U: render the last line
     A->>H: append {user, assistant} turn
 ```
 
@@ -40,7 +40,7 @@ Every setting follows the same CLI-overrides-config-overrides-default chain:
 ```mermaid
 flowchart TD
     A["Parameter passed?"] -->|yes| B["Use CLI value"]
-    A -->|no| C["config.json value?"]
+    A -->|no| C["~/.ask.json value?"]
     C -->|yes| D["Use config value"]
     C -->|no| E["Use built-in default"]
     B --> F["Effective setting"]
@@ -48,22 +48,27 @@ flowchart TD
     E --> F
 ```
 
-## Chat vs. generate
+## Model capabilities and tools
 
-Not every model exposes `/api/chat`. `ask.ps1` probes `/api/tags` for the target model's capabilities and falls back to `/api/generate`, flattening any conversation history into the prompt text instead of a messages array:
+`ask.ps1` always uses `/api/chat`. It asks `/api/show` for the model's capabilities (cached for a day in `~/.ask_model_cache.json`) to catch a missing or non-text model early and to decide how tools are offered. Tools are off unless `-Tools` or `"tools": true`; then `tools_model` is used if set, and the loop in `ask-tools.ps1` takes over:
 
 ```mermaid
-flowchart LR
-    Q["Question + history"] --> T{"Model supports\nchat capability?"}
-    T -->|yes| M["POST /api/chat\nmessages: [system, ...history, user]"]
-    T -->|no / unknown| G["POST /api/generate\nprompt: system + history + question, flattened"]
-    M --> S["Stream tokens"]
-    G --> S
+flowchart TD
+    Q["Question + history"] --> T{"Tools on?"}
+    T -->|no| S["POST /api/chat stream:true\nrender Markdown line by line"]
+    T -->|yes| C{"Model has native\ntools capability?"}
+    C -->|yes| N["POST /api/chat with tools[]"]
+    C -->|no| P["TOOL {...} protocol in system prompt\n(warns: set tools_model)"]
+    N --> L["tool loop, max 8 rounds"]
+    P --> L
+    L --> R{"run_command?"}
+    R -->|yes| Y["ask y/N first"]
+    L --> A["final answer rendered"]
 ```
 
 ## Conversation history
 
-By default, `ask` remembers the conversation. Each call appends your question and the model's reply to `~/.ask_conversation_state.json`, capped at the last 20 exchanges (40 messages), and prepends that history to the next request. Turns are sent to `/api/chat` with their real roles, so the model treats earlier questions as answered and replies only to the latest; re-asking a question drops its earlier exchange. Set `"history": false` in `~/.ask.json` to disable history by default.
+By default, `ask` remembers the conversation. Each call appends your question and the model's reply to `~/.ask_conversation_state.json`, capped at the last 20 exchanges (40 messages), and prepends that history to the next request. Turns are sent to `/api/chat` with their real roles, so the model treats earlier questions as answered and replies only to the latest; re-asking a question drops its earlier exchange. After `history_idle_minutes` (default 30) without a question, the next one starts a fresh thread. Set `"history": false` in `~/.ask.json` to disable history by default.
 
 ```mermaid
 stateDiagram-v2

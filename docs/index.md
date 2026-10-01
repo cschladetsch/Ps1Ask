@@ -1,11 +1,11 @@
 ---
 title: Overview
-description: A minimal PowerShell CLI for asking your local LLM a question from any terminal
+description: A PowerShell CLI for asking your local LLM a question from any terminal
 ---
 
 # CppAsk
 
-A minimal PowerShell CLI for asking your local LLM a question from any terminal, without quotes, without a browser, without friction.
+A PowerShell CLI for asking your local LLM a question from any terminal, without quotes, without a browser, without friction. Replies stream in as rendered Markdown.
 
 Built on top of [CppLocalLlmCodeAssist](https://github.com/cschladetsch/CppLocalLlmCodeAssist) and [Ollama](https://ollama.com).
 
@@ -22,11 +22,11 @@ ask -Models
 flowchart LR
     U["User\nask what is CRTP"]
     PS["ask.ps1\nPowerShell"]
-    CFG["~/.config/ask/config.json\ndefault model, host, port"]
+    CFG["~/.ask.json\ndefault model, host, port"]
     HIST["~/.ask_conversation_state.json\nprior turns"]
     OL["Ollama\n:11434/api/chat"]
     CP["cppcoder --serve\n:8765/api/chat"]
-    OUT["stdout\nstreamed tokens"]
+    OUT["terminal\nMarkdown rendered line by line"]
 
     U --> PS
     CFG -->|load defaults| PS
@@ -53,7 +53,7 @@ cd CppAsk
 .\install.ps1
 ```
 
-The installer copies `ask.ps1` to `~/bin`, adds it to `PATH`, wires up an `ask` alias in `$PROFILE`, queries `ollama list`, and writes `~/.config/ask/config.json`.
+The installer copies `ask.ps1` and `ask-tools.ps1` to `~/bin`, adds it to `PATH`, wires up an `ask` alias in `$PROFILE`, queries `ollama list`, and writes `~/.ask.json`.
 
 See [Architecture](architecture) for the request lifecycle, config resolution, conversation history, and model listing in detail.
 
