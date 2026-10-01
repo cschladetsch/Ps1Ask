@@ -22,10 +22,10 @@
     Only run one question per category instead of all.
 
 .EXAMPLE
-    .\benchmark.ps1
-    .\benchmark.ps1 -Quick
-    .\benchmark.ps1 -Models qwen2.5-coder:7b,dolphin-8b:latest
-    .\benchmark.ps1 -OutputFile C:\tmp\bench.json
+    .\bench.ps1
+    .\bench.ps1 -Quick
+    .\bench.ps1 -Models qwen2.5-coder:7b,dolphin-8b:latest
+    .\bench.ps1 -OutputFile C:\tmp\bench.json
 #>
 param(
     [string]   $OutputFile  = (Join-Path $HOME "bench-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"),
@@ -174,10 +174,22 @@ function Invoke-ModelQuery {
 }
 
 # ── Determine endpoint per model ──────────────────────────────────────────────
+# Capabilities come from /api/show (completion, tools, vision, embedding, ...).
+# /api/tags doesn't list them and there is no "chat" capability, so the old
+# check for "chat" in /api/tags sent every model down /api/generate -- the same
+# bug ask.ps1 had. /api/chat works for any completion model; a model without
+# "completion" (an embedding model) can't answer at all and is skipped.
 
 function Get-Endpoint([string] $Model) {
-    $info = $tagsResp.models | Where-Object { $_.name -eq $Model } | Select-Object -First 1
-    if ($info -and $info.capabilities -contains "chat") { return "chat" } else { return "generate" }
+    try {
+        $body = @{ model = $Model } | ConvertTo-Json -Compress
+        $show = Invoke-RestMethod "$baseUrl/api/show" -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
+    } catch {
+        return "chat"   # old Ollama without /api/show, or it failed: let the query report it
+    }
+    $caps = @($show.capabilities)
+    if ($caps.Count -gt 0 -and $caps -notcontains "completion") { return "skip" }
+    return "chat"
 }
 
 # ── Run benchmark ─────────────────────────────────────────────────────────────
@@ -189,6 +201,12 @@ foreach ($model in $testModels) {
     Write-Host "── $model ──────────────────────────────" -ForegroundColor Yellow
     $endpoint = Get-Endpoint $model
     $modelResults = @()
+
+    if ($endpoint -eq "skip") {
+        Write-Host "  skipped: can't generate text (embedding model)" -ForegroundColor DarkGray
+        Write-Host ""
+        continue
+    }
 
     foreach ($q in $questions) {
         Write-Host "  [$($q.category)] $($q.prompt.Substring(0, [Math]::Min(60, $q.prompt.Length)))..." -NoNewline
@@ -215,13 +233,17 @@ foreach ($model in $testModels) {
     }
 
     # Per-model summary
-    $successful = $modelResults | Where-Object { $_.error -eq "" }
-    $avgToksec  = if ($successful.Count -gt 0) {
-        [math]::Round(($successful | Measure-Object -Property tokens_sec -Average).Average, 1)
-    } else { -1 }
-    $avgTotal   = if ($successful.Count -gt 0) {
-        [math]::Round(($successful | Measure-Object -Property total_ms -Average).Average, 0)
-    } else { -1 }
+    # @(...): a single result would otherwise be one hashtable, and .Count on
+    # a hashtable is its number of keys.
+    $successful = @($modelResults | Where-Object { $_.error -eq "" })
+    # Values pulled out by key: Measure-Object -Property can't see the keys of
+    # these ordered hashtables, so it averaged nothing and every model scored
+    # 0 (and the leaderboard, which skips <= 0, was always empty). Questions
+    # where Ollama reported no token count (tokens_sec -1) are left out.
+    $rates      = @($successful | ForEach-Object { $_.tokens_sec } | Where-Object { $_ -gt 0 })
+    $totals     = @($successful | ForEach-Object { $_.total_ms })
+    $avgToksec  = if ($rates.Count -gt 0)  { [math]::Round(($rates  | Measure-Object -Average).Average, 1) } else { -1 }
+    $avgTotal   = if ($totals.Count -gt 0) { [math]::Round(($totals | Measure-Object -Average).Average, 0) } else { -1 }
 
     Write-Host "  avg: $avgToksec tok/s  avg total: ${avgTotal}ms  ($($successful.Count)/$($modelResults.Count) ok)" -ForegroundColor Cyan
     Write-Host ""

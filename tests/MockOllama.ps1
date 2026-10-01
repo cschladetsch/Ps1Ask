@@ -104,7 +104,8 @@ function Start-MockOllama {
                             $line = (@{ message = @{ role = "assistant"; content = $piece }; done = $false } | ConvertTo-Json -Compress) + "`n"
                             $b = [System.Text.Encoding]::UTF8.GetBytes($line); $out.Write($b, 0, $b.Length); $out.Flush()
                         }
-                        $line = (@{ message = @{ role = "assistant"; content = "" }; done = $true } | ConvertTo-Json -Compress) + "`n"
+                        # eval_count like real Ollama (about 4 characters a token), for bench.ps1.
+                        $line = (@{ message = @{ role = "assistant"; content = "" }; done = $true; eval_count = [Math]::Max(1, [int]($text.Length / 4)) } | ConvertTo-Json -Compress) + "`n"
                         $b = [System.Text.Encoding]::UTF8.GetBytes($line); $out.Write($b, 0, $b.Length)
                         $resp.Close()
                     } else {
