@@ -18,12 +18,21 @@ Describe "ask, run as a command" {
         # Lines and ExitCode. -Stdin feeds text on stdin, so stdin is redirected.
         function Invoke-Ask {
             param([string[]]$AskArgs = @(), [string]$Script = $AskScript, [string]$Stdin)
-            $raw = if ($PSBoundParameters.ContainsKey('Stdin')) {
-                $Stdin | & $Pwsh -NoProfile -NonInteractive -File $Script @AskArgs 2>&1
-            } else {
-                & $Pwsh -NoProfile -NonInteractive -File $Script @AskArgs 2>&1
+            # A redirected child process encodes stdout with the console code page,
+            # which on Windows (OEM 437) can't carry "•" or "─". Use UTF-8 for
+            # the capture; the child inherits it from the shared console.
+            $prevEncoding = [Console]::OutputEncoding
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            try {
+                $raw = if ($PSBoundParameters.ContainsKey('Stdin')) {
+                    $Stdin | & $Pwsh -NoProfile -NonInteractive -File $Script @AskArgs 2>&1
+                } else {
+                    & $Pwsh -NoProfile -NonInteractive -File $Script @AskArgs 2>&1
+                }
+                $code = $LASTEXITCODE
+            } finally {
+                [Console]::OutputEncoding = $prevEncoding
             }
-            $code  = $LASTEXITCODE
             # Colour codes removed, and the empty line left by the final reset dropped.
             $lines = @($raw | ForEach-Object { ([string]$_) -replace "\x1b\[[0-9;?]*[A-Za-z]", "" } | Where-Object { $_ -ne "" })
             [pscustomobject]@{ Text = ($lines -join "`n"); Lines = $lines; ExitCode = $code }

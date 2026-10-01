@@ -448,7 +448,7 @@ ask -Models                    # list models on the server (* marks the default)
 
 ```powershell
 Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck   # once
-./tests/run.ps1               # or: ./tests/run.ps1 -Detailed
+./tests/run.ps1               # prints each test as it finishes; -Quiet for failures only
 ```
 
 Each integration test gets its own `ASK_HOME`, so your real `~/.ask.json`,
