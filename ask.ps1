@@ -83,6 +83,21 @@
 .PARAMETER Models
     List models available on the Ollama server, then exit.
 
+.PARAMETER Facts
+    List the saved facts, numbered, then exit.
+
+.PARAMETER Fact
+    Save the words as a fact even if they don't look like a statement,
+    e.g. ask -Fact the build server is cobalt.
+
+.PARAMETER Forget
+    Remove a fact by number (ask -Forget 2) or by matching text
+    (ask -Forget name), then exit.
+
+.PARAMETER NoFacts
+    For this call, don't send the saved facts and don't treat a statement
+    as a fact: it goes to the model as an ordinary question.
+
 .PARAMETER Check
     Check that the Ollama server is up and list its models, with * in
     front of the current one, then exit (non-zero if the server is down).
@@ -94,6 +109,8 @@
     ask 'what''s the difference between std::span and std::string_view'
     ask what does PatchApplier do -Model codellama:7b
     ask -model
+    ask my name is Christian
+    ask -Facts
     ask --check
     ask -SetModel dolphin-8b:latest
     ask br old.reddit.com
@@ -131,7 +148,11 @@ param(
     [Alias("h")]
     [switch] $Help,
     [switch] $Models,
-    [switch] $Check
+    [switch] $Check,
+    [switch] $Facts,
+    [switch] $Fact,
+    [switch] $Forget,
+    [switch] $NoFacts
 )
 
 $ErrorActionPreference = "Stop"
@@ -160,6 +181,14 @@ Answering:
   -System <text>          extra system prompt
   -NoStream               buffer the reply before printing
   -NoColor                plain output, no markdown rendering
+
+Facts (statements are remembered, not answered):
+  ask my name is Christian    saved to "facts" in ~/.ask.json, sent with
+                              every question so the model can use them
+  -Fact <text>            save text as a fact even if it isn't detected
+  -Facts                  list saved facts
+  -Forget <n|text>        remove a fact by number or matching text
+  -NoFacts                this call: no facts sent, statements asked as-is
 
 History:
   -NewChat                clear history, then ask
@@ -193,7 +222,7 @@ model with native tool support (e.g. qwen2.5:7b) to use it with -Tools.
 
 Config:  ~/.ask.json   (model, tools_model, host, port_direct, port_serve,
                         system, history, history_idle_minutes, tools,
-                        confirm_commands, tool_output_chars)
+                        confirm_commands, tool_output_chars, facts)
 History: ~/.ask_conversation_state.json
 
 Examples:
@@ -339,6 +368,7 @@ $defaults = @{
     tools                = $false
     confirm_commands     = $true   # y/N before run_command
     tool_output_chars    = 8000
+    facts                = @()     # statements the user told ask; see "Facts"
 }
 
 if (Test-Path $configPath) {
@@ -410,16 +440,27 @@ if ($NewChat) {
 # (Dumping the in-memory defaults here once switched tools on behind the
 # user's back.)
 
-if ($SetModel -ne "") {
-    $cfg = [ordered]@{}
+# Read ~/.ask.json as written (not merged with defaults), for edits that must
+# leave every other key alone.
+function Read-AskConfigTable {
+    $cfg = $null
     if (Test-Path $configPath) {
         try { $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable } catch {
             Stop-Ask "Could not parse ${configPath}, not changing it: $_"
         }
-        if ($null -eq $cfg) { $cfg = [ordered]@{} }
     }
+    if ($null -eq $cfg) { $cfg = [ordered]@{} }
+    return $cfg
+}
+
+function Write-AskConfigTable($cfg) {
+    $cfg | ConvertTo-Json -Depth 5 | Set-Content $configPath
+}
+
+if ($SetModel -ne "") {
+    $cfg = Read-AskConfigTable
     $cfg["model"] = $SetModel
-    $cfg | ConvertTo-Json | Set-Content $configPath
+    Write-AskConfigTable $cfg
     Write-Host "Default model set to '$SetModel' in $configPath" -ForegroundColor Green
     return
 }
@@ -586,7 +627,7 @@ if ($Model) {
 
 # ── Require a question ────────────────────────────────────────────────────────
 
-if (-not $Question) {
+if (-not $Question -and -not ($Facts -or $Forget)) {
     Stop-Ask "No question provided. Usage: ask what is the rule of five"
 }
 
@@ -608,6 +649,134 @@ if (-not $NoTools -and $questionText -match '^\s*(?:br|open|go\s+to|goto|visit)\
         $u = Resolve-AskUrl $target
         Write-Host "  > open $u" -ForegroundColor DarkGray
         Start-Process $u
+        return
+    }
+}
+
+# ── Facts ─────────────────────────────────────────────────────────────────────
+# A statement about the user or their setup ("my name is Christian", "I live
+# in Melbourne", "remember that the build box is cobalt") is saved to "facts"
+# in ~/.ask.json instead of being sent as a question, and every later request
+# carries the facts in its system prompt so the model can reason with them.
+#
+# Detection is local and conservative -- a small model asked to tell
+# statements from questions also answered "OK" to real questions -- so only
+# first-person statements and "remember ..." count. Anything else can be
+# saved with -Fact; a misfire is undone with -Forget and re-asked with
+# -NoFacts. Facts are plain text: any model can use them, and nothing stops
+# a structured (e.g. Prolog) store being added alongside later.
+
+$factList = @($defaults["facts"] | Where-Object { $_ -is [string] -and $_.Trim() -ne "" })
+
+function Save-AskFacts([string[]]$list) {
+    $cfg = Read-AskConfigTable
+    $cfg["facts"] = @($list)
+    Write-AskConfigTable $cfg
+}
+
+# "my name is X" replaces an earlier "my name is Y"; same for where you live
+# or work. Other facts just accumulate.
+function Get-AskFactKey([string]$f) {
+    $t = $f.Trim().ToLowerInvariant()
+    if ($t -match '^(?:my|our)\s+(.+?)\s+(?:is|are|was|were)\b') { return "my $($Matches[1])" }
+    if ($t -match '^i\s+(live|work)\b') { return "i $($Matches[1])" }
+    return $null
+}
+
+function Add-AskFact([string]$fact) {
+    $fact = ($fact.Trim() -replace '\s+', ' ').TrimEnd('.')
+    $script:factList = @($script:factList)
+    for ($i = 0; $i -lt $factList.Count; $i++) {
+        if ($factList[$i] -ieq $fact) {
+            Write-Host "Already noted (fact $($i + 1)): $fact" -ForegroundColor DarkGray
+            return
+        }
+    }
+    $key = Get-AskFactKey $fact
+    if ($key) {
+        for ($i = 0; $i -lt $factList.Count; $i++) {
+            if ((Get-AskFactKey $factList[$i]) -eq $key) {
+                $old = $factList[$i]
+                $script:factList[$i] = $fact
+                Save-AskFacts $script:factList
+                Write-Host "Updated fact $($i + 1): $fact" -ForegroundColor Green
+                Write-Host "  (was: $old)" -ForegroundColor DarkGray
+                return
+            }
+        }
+    }
+    $script:factList += $fact
+    Save-AskFacts $script:factList
+    $n = $script:factList.Count
+    Write-Host "Noted (fact ${n}): $fact" -ForegroundColor Green
+    Write-Host "  Not a fact? ask -Forget $n, then re-ask with -NoFacts" -ForegroundColor DarkGray
+}
+
+# The fact text if $text is a statement to remember, else $null.
+function Get-AskStatement([string]$text) {
+    $t = $text.Trim()
+    if ($t -match '\?\s*$') { return $null }
+    if ($t -match '^(?:please\s+)?remember(?:\s+that)?[:,]?\s+(.+)$') { return $Matches[1].Trim() }
+
+    # Questions and requests, however they're phrased.
+    $askWords = 'what|whats|who|whom|whose|when|where|which|why|how|is|are|am|was|were|do|does|did|' +
+                'can|could|should|would|will|shall|may|might|must|has|have|had|explain|describe|' +
+                'show|tell|give|list|write|make|create|generate|compare|summarise|summarize|define|' +
+                'translate|convert|calculate|compute|find|fix|help|please|run|check|debug|review'
+    if ($t -match "^(?:$askWords)\b") { return $null }
+    if ($t -match '\b(?:question|problem|issue|bug|error|help|how|why|what|explain|fail\w*|broken|crash\w*|wrong|not\s+working)\b') {
+        return $null
+    }
+
+    $firstPerson = '^(?:(?:my|our)\s+[\w''-]+(?:\s+[\w''-]+){0,3}\s+(?:is|are|was|were)\s+\S' +
+                   '|i\s+(?:am|have|live|work|use|prefer|like|love|hate|dislike|own|run|study|speak|code|write|play|was\s+born)\b\s*\S' +
+                   '|i''m\s+\S|im\s+\S|i''ve\s+\S)'
+    if ($t -match $firstPerson) { return $t }
+    return $null
+}
+
+if ($Facts) {
+    if ($factList.Count -eq 0) {
+        Write-Host "No facts yet. Statements like 'ask my name is Christian' are saved automatically."
+    } else {
+        for ($i = 0; $i -lt $factList.Count; $i++) { Write-Host ("{0,3}. {1}" -f ($i + 1), $factList[$i]) }
+    }
+    return
+}
+
+if ($Forget) {
+    $what = ($Question -join " ").Trim()
+    if ($what -eq "") { Stop-Ask "Forget which fact? ask -Forget <number|text>  (see ask -Facts)" }
+    $idx = @()
+    if ($what -match '^\d+$') {
+        if ([int]$what -ge 1 -and [int]$what -le $factList.Count) { $idx = @([int]$what - 1) }
+    } else {
+        for ($i = 0; $i -lt $factList.Count; $i++) {
+            if ($factList[$i].IndexOf($what, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $idx += $i }
+        }
+    }
+    if ($idx.Count -eq 0) { Stop-Ask "No fact matches '$what'. See: ask -Facts" }
+    if ($idx.Count -gt 1) {
+        Write-Host "'$what' matches more than one fact; forget by number:" -ForegroundColor Yellow
+        foreach ($i in $idx) { Write-Host ("{0,3}. {1}" -f ($i + 1), $factList[$i]) }
+        exit 1
+    }
+    $gone = $factList[$idx[0]]
+    $factList = @(for ($i = 0; $i -lt $factList.Count; $i++) { if ($i -ne $idx[0]) { $factList[$i] } })
+    Save-AskFacts $factList
+    Write-Host "Forgot: $gone" -ForegroundColor Green
+    return
+}
+
+if ($Fact) {
+    Add-AskFact $questionText
+    return
+}
+
+if (-not $NoFacts) {
+    $statement = Get-AskStatement $questionText
+    if ($statement) {
+        Add-AskFact $statement
         return
     }
 }
@@ -686,6 +855,11 @@ $toolRule    = "You have tools: you can fetch web pages, open URLs in the user's
 
 $userSystem = if ($System -ne "") { $System } else { $defaults["system"] }
 $sysParts = @()
+if (-not $NoFacts -and $factList.Count -gt 0) {
+    $sysParts += "Facts the user has told you about themselves and their setup, in their own words " +
+                 "(""I"" and ""my"" mean the user). Use them when they're relevant; don't recite them " +
+                 "unprompted:`n" + (($factList | ForEach-Object { "- $_" }) -join "`n")
+}
 if ($userSystem -ne "") { $sysParts += $userSystem }
 if ($verboseMode)       { $sysParts += $verboseRule }
 if ($toolsOn)           { $sysParts += $toolRule }

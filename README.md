@@ -13,6 +13,7 @@ Built on top of [CppLocalLlmCodeAssist](https://github.com/cschladetsch/CppLocal
 ask what is the rule of five in C++23
 ask explain CRTP -Model qwen2.5-coder:7b
 ask -model                  # which model am I using?
+ask my name is Christian    # a statement: saved as a fact, not answered
 ask-check                   # is Ollama up? (* marks the current model)
 ask -SetModel dolphin-8b:latest
 ```
@@ -138,6 +139,14 @@ ask -Model codellama:7b write a merge sort in Rust
 ask -model
 ask --model
 
+# Tell it things; statements are remembered as facts, not answered
+ask my name is Christian
+ask I live in East Melbourne
+ask remember that the build box is cobalt
+ask what is my name           # answered using the facts
+ask -Facts                    # list them
+ask -Forget 2                 # or: ask -Forget cobalt
+
 # Is the server up, and which models are installed?
 ask-check
 ask --check
@@ -206,6 +215,10 @@ ask 'what''s the difference between #pragma once and include guards'
 | `-Version`, `--version` |            | Print version, commit and install time, then exit         |
 | `-Models`     |                      | List models available on the Ollama server, then exit    |
 | `-Check`, `--check` |                | Check the server and list models (`*` = current), then exit; same as `ask-check` |
+| `-Facts`      |                      | List saved facts, numbered, then exit                    |
+| `-Fact`       | off                  | Save the words as a fact even if they don't look like a statement |
+| `-Forget`     |                      | Remove a fact by number or matching text, then exit      |
+| `-NoFacts`    | off                  | This call: send no facts, and ask a statement as a question |
 
 ---
 
@@ -271,6 +284,56 @@ Server options pass through: `ask-check -Port 11435`.
 
 ---
 
+## Facts
+
+A statement isn't a question, so `ask` doesn't send it to the model: it saves
+it to `facts` in `~/.ask.json` and says `Noted (fact n)`. Every later request
+carries the facts in its system prompt, so the model can reason with them:
+
+```powershell
+ask my name is Christian      # Noted (fact 1): my name is Christian
+ask I live in East Melbourne  # Noted (fact 2): I live in East Melbourne
+ask what is my name           # the model sees both facts
+ask my name is Chris          # Updated fact 1 (replaces the old name)
+```
+
+Detection is local and deliberately conservative (a small model asked to tell
+statements from questions also answered "OK" to real questions). A statement
+counts when it:
+
+- starts with `remember` / `remember that`, or
+- is first person: `my <thing> is/are ...`, `I am/live/work/have/use/prefer/like ...`
+
+and is not a question: no trailing `?`, doesn't start with a question or
+request word (`what`, `is`, `explain`, `show`, ...), and doesn't mention
+`help`, `bug`, `error`, `failing` and so on. So `I have a question about
+templates` and `my build is failing` still go to the model.
+
+Anything else can be saved with `-Fact` (`ask -Fact the server is at
+10.0.0.5`). If something is saved by mistake, `ask -Forget <n>` removes it
+and `-NoFacts` re-asks it as a question. `my <thing> is ...` replaces an
+earlier fact about the same thing, as do `I live ...` and `I work ...`.
+
+```mermaid
+flowchart TD
+    I["ask &lt;words&gt;"] --> NF{"-NoFacts?"}
+    NF -->|yes| Q["send to the model as a question"]
+    NF -->|no| R{"starts with\nremember (that)?"}
+    R -->|yes| SAVE
+    R -->|no| QM{"ends with ?, starts with a\nquestion/request word, or mentions\nhelp/bug/error/failing...?"}
+    QM -->|yes| Q
+    QM -->|no| FP{"first person?\nmy X is ... / I live, work,\nam, have, use, prefer ..."}
+    FP -->|no| Q
+    FP -->|yes| SAVE["save to facts in ~/.ask.json\n(my X is ... replaces an older one)"]
+    SAVE --> ACK["Noted (fact n) -- no model call"]
+    Q --> SYS["system prompt carries every fact\nso the model can reason with them"]
+```
+
+Mind the [quoting](#quoting) rules: `ask I'm a C++ programmer` breaks on the
+apostrophe; write `ask 'I''m a C++ programmer'` or `ask I am a C++ programmer`.
+
+---
+
 ## Config
 
 `~/.ask.json` -- created by the installer, edited by `-SetModel`. Every key
@@ -288,7 +351,8 @@ is optional; these are the defaults:
     "history_idle_minutes": 30,
     "tools":                false,
     "confirm_commands":     true,
-    "tool_output_chars":    8000
+    "tool_output_chars":    8000,
+    "facts":                []
 }
 ```
 
@@ -302,6 +366,7 @@ is optional; these are the defaults:
 | `tools`                | Tools on by default                                            |
 | `confirm_commands`     | Ask y/N before `run_command`                                   |
 | `tool_output_chars`    | Cap on tool output passed back to the model                    |
+| `facts`                | Statements you've told `ask` (see [Facts](#facts)); edit by hand or with `-Fact` / `-Forget` |
 
 CLI parameters always override config for that run. Model capabilities from
 `/api/show` are cached for a day in `~/.ask_model_cache.json`.

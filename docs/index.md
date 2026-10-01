@@ -13,6 +13,8 @@ Built on top of [CppLocalLlmCodeAssist](https://github.com/cschladetsch/CppLocal
 ask what is the rule of five in C++23
 ask explain CRTP -Model qwen2.5-coder:7b
 ask -model                  # show the current model
+ask my name is Christian    # a statement: saved as a fact
+ask -Facts                  # list facts
 ask-check                   # same as: ask --check
 ask -SetModel dolphin-8b:latest
 ask -Models
@@ -30,6 +32,9 @@ flowchart LR
     D -->|"-Models"| L["list models"]
     D -->|"-SetModel tag"| S["save default model"]
     D -->|"-Tools question"| T["tool loop\n(ask-tools.ps1)"]
+    D -->|"statement\n(my name is ...)"| F["save to facts\nin ~/.ask.json"]
+    D -->|"-Facts / -Forget n"| FL["list / remove facts"]
+    F -.->|"sent with every question"| CHAT
 ```
 
 ## How it works
@@ -71,7 +76,7 @@ cd CppAsk
 
 The installer copies `ask.ps1`, `ask-tools.ps1` and `ask-check.ps1` to `~/bin`, adds it to `PATH`, wires up an `ask` alias in `$PROFILE`, queries `ollama list`, and writes `~/.ask.json`.
 
-See [Architecture](architecture) for the request lifecycle, config resolution, model resolution, the server check, conversation history, and model listing in detail.
+See [Architecture](architecture) for the request lifecycle, config resolution, model resolution, the server check, facts, conversation history, and model listing in detail.
 
 ## Related
 

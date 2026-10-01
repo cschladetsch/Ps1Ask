@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Request lifecycle, config resolution, model resolution, server check, conversation history, and model listing
+description: Request lifecycle, config resolution, model resolution, server check, facts, conversation history, and model listing
 ---
 
 # Architecture
@@ -119,6 +119,25 @@ flowchart TD
     W -->|no| WARN["[WARN] ollama pull hint"]
     W -->|yes| OK["exit 0"]
     WARN --> OK
+```
+
+## Facts
+
+Statements are caught locally before any model call and saved to `facts` in `~/.ask.json`; questions get every fact in their system prompt:
+
+```mermaid
+flowchart TD
+    I["ask &lt;words&gt;"] --> NF{"-NoFacts?"}
+    NF -->|yes| Q["send to the model as a question"]
+    NF -->|no| R{"starts with\nremember (that)?"}
+    R -->|yes| SAVE
+    R -->|no| QM{"ends with ?, starts with a\nquestion/request word, or mentions\nhelp/bug/error/failing...?"}
+    QM -->|yes| Q
+    QM -->|no| FP{"first person?\nmy X is ... / I live, work,\nam, have, use, prefer ..."}
+    FP -->|no| Q
+    FP -->|yes| SAVE["save to facts in ~/.ask.json\n(my X is ... replaces an older one)"]
+    SAVE --> ACK["Noted (fact n) -- no model call"]
+    Q --> SYS["system prompt carries every fact\nso the model can reason with them"]
 ```
 
 ## Model listing
