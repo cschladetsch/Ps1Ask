@@ -180,7 +180,8 @@ ask explain templates -NoStream
     "host":        "127.0.0.1",
     "port_direct": 11434,
     "port_serve":  8765,
-    "system":      ""
+    "system":      "",
+    "history":     true
 }
 ```
 
@@ -195,6 +196,10 @@ and the model's reply to `~/.ask_conversation_state.json`, and prepends
 everything from that file (capped at the last 20 exchanges) to the next
 request -- so follow-ups like `ask and what about X` actually have the prior
 turns as context, same as a chat UI.
+
+The prior turns are context only: `ask` tells the model to reply to the latest
+question alone, so it doesn't re-answer everything earlier in the thread. Set
+`"history": false` in `~/.ask.json` to turn history off by default.
 
 ```powershell
 ask what is CRTP

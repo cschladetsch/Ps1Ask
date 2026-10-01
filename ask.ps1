@@ -41,6 +41,7 @@
 .PARAMETER NoHistory
     Ask this one question without reading or writing conversation
     history at all -- a true one-shot, ignoring any existing thread.
+    To turn history off permanently, set "history": false in ~/.ask.json.
 
 .PARAMETER ClearHistory
     Wipe conversation history and exit without asking anything.
@@ -162,6 +163,7 @@ $defaults = @{
     port_direct = 11434
     port_serve  = 8765
     system     = ""
+    history    = $true
 }
 
 if (Test-Path $configPath) {
@@ -178,11 +180,20 @@ if (Test-Path $configPath) {
 # ── Conversation history (~/.ask_conversation_state.json) ─────────────────────
 # A flat list of {role, content} turns, most recent last. Capped to the last
 # $maxHistoryTurns exchanges (user+assistant pairs) so context doesn't grow
-# forever. -NoHistory skips reading/writing this entirely; -NewChat clears it
-# before this question; -ClearHistory clears it and exits.
+# forever. On by default; "history": false in ~/.ask.json turns it off.
+# -NoHistory skips reading/writing it for one call; -NewChat clears it before
+# this question; -ClearHistory clears it and exits.
+#
+# Prior turns are sent as context only: an instruction tells the model to
+# reply to the final question alone, since small models otherwise tend to
+# re-answer every earlier question in the thread.
 
 $historyPath     = Join-Path $HOME ".ask_conversation_state.json"
 $maxHistoryTurns = 20   # exchanges, i.e. 40 messages
+$useHistory      = ($defaults["history"] -in @($true, "true", 1)) -and -not $NoHistory
+$historyNote     = "The earlier messages are conversation history and have already been answered. " +
+                   "Use them only as context. Reply only to the final user message; do not repeat, " +
+                   "summarise or re-answer earlier questions."
 
 function Get-AskHistory {
     if (-not (Test-Path $historyPath)) { return @() }
@@ -294,7 +305,7 @@ $url = if ($useChat) { "$baseUrl/api/chat" } else { "$baseUrl/api/generate" }
 
 $questionText = $Question -join " "
 
-$priorTurns = if ($NoHistory) { @() } else { Get-AskHistory }
+$priorTurns = if ($useHistory) { @(Get-AskHistory) } else { @() }
 
 if ($useChat) {
     $messages = @()
@@ -303,6 +314,10 @@ if ($useChat) {
     }
     foreach ($turn in $priorTurns) {
         $messages += @{ role = $turn.role; content = $turn.content }
+    }
+    if ($priorTurns.Count -gt 0) {
+        # Placed right before the new question so small models actually heed it.
+        $messages += @{ role = "system"; content = $historyNote }
     }
     $messages += @{ role = "user"; content = $questionText }
     $body = @{
@@ -317,8 +332,14 @@ if ($useChat) {
     }) -join "`n"
     $promptParts = @()
     if ($effectiveSystem -ne "") { $promptParts += $effectiveSystem }
-    if ($historyText -ne "")     { $promptParts += $historyText }
-    $promptParts += $questionText
+    if ($historyText -ne "") {
+        $promptParts += $historyText
+        $promptParts += $historyNote
+        $promptParts += "User: $questionText"
+        $promptParts += "Assistant:"
+    } else {
+        $promptParts += $questionText
+    }
     $prompt = $promptParts -join "`n"
     $body = @{
         model  = $effectiveModel
@@ -402,7 +423,7 @@ try {
     $reader.Close()
     $response.Close()
 
-    if (-not $NoHistory) {
+    if ($useHistory) {
         $updated = @($priorTurns) + @(
             @{ role = "user";      content = $questionText },
             @{ role = "assistant"; content = $fullText }

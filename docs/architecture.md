@@ -19,10 +19,10 @@ sequenceDiagram
     A->>C: load defaults
     C-->>A: model, host, port, system
     A->>A: CLI args override defaults
-    A->>H: load prior turns (unless -NoHistory)
+    A->>H: load prior turns (if history on, unless -NoHistory)
     H-->>A: [{role, content}, ...]
     A->>A: join question words
-    A->>A: build JSON body (system + history + question)
+    A->>A: build JSON body (system + history + reply-to-last note + question)
     A->>O: POST /api/chat {stream:true}
     loop each NDJSON chunk
         O-->>A: {message:{content:"..."}, done:false}
@@ -63,7 +63,7 @@ flowchart LR
 
 ## Conversation history
 
-By default, `ask` remembers the conversation. Each call appends your question and the model's reply to `~/.ask_conversation_state.json`, capped at the last 20 exchanges (40 messages), and prepends that history to the next request.
+By default, `ask` remembers the conversation. Each call appends your question and the model's reply to `~/.ask_conversation_state.json`, capped at the last 20 exchanges (40 messages), and prepends that history to the next request. A system note placed just before the new question tells the model the earlier turns are already answered and to reply only to the latest one. Set `"history": false` in `~/.ask.json` to disable history by default.
 
 ```mermaid
 stateDiagram-v2
