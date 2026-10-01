@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Request lifecycle, config resolution, model resolution, server check, facts, conversation history, and model listing
+description: Request lifecycle, config resolution, model resolution, server check, facts, conversation history, model listing, and tests
 ---
 
 # Architecture
@@ -150,6 +150,21 @@ flowchart LR
     R --> Q["GET /api/tags"]
     Q --> L["list model names + sizes"]
     L --> M["mark current default with *"]
+```
+
+## Tests
+
+`tests/run.ps1` runs 100 Pester tests: unit tests on functions lifted out of `ask.ps1`'s AST, and integration tests that run `ask.ps1` as a command against a scripted fake Ollama, each in its own `ASK_HOME`:
+
+```mermaid
+flowchart LR
+    R["tests/run.ps1"] --> P["Pester 5"]
+    P --> U["Unit.Tests.ps1\n55 tests"]
+    P --> I["Integration.Tests.ps1\n45 tests"]
+    U -->|"functions lifted\nfrom the AST"| A1["ask.ps1 functions\n+ ask-tools.ps1"]
+    I -->|"pwsh -File ask.ps1 ...\nASK_HOME = temp dir\nASK_NO_LAUNCH = 1"| A2["ask.ps1 / ask-check.ps1\nas a command"]
+    A2 -->|HTTP| M["MockOllama.ps1\nHttpListener on localhost\nscripted replies"]
+    M -->|"request log"| I
 ```
 
 ## Related

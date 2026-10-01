@@ -15,7 +15,7 @@
 #     tool call by getting the model to quote it.
 #
 # Relies on ask.ps1 for: $defaults, $effectiveModel, $questionText,
-# Invoke-OllamaJson and Resolve-AskUrl.
+# Invoke-OllamaJson, Test-AskFlag, Resolve-AskUrl and Open-AskUrl.
 
 $AskToolSpecs = @(
     @{ name = "fetch_url";   arg = "url";     desc = "Download a web page and return its text, to read, check or summarise it." },
@@ -74,8 +74,7 @@ function Invoke-AskTool([string]$name, $toolArgs) {
             }
             "open_url" {
                 $u = Resolve-AskUrl ([string]$toolArgs.url)
-                Write-Host "  > open $u" -ForegroundColor DarkGray
-                Start-Process $u
+                Open-AskUrl $u
                 return "Opened $u in the user's default browser."
             }
             "read_file" {

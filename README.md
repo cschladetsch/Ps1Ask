@@ -437,6 +437,42 @@ ask -Models                    # list models on the server (* marks the default)
 
 ---
 
+## Tests
+
+100 Pester tests, none of which need a real Ollama:
+
+| File | Tests | What |
+|------|-------|------|
+| `tests/Unit.Tests.ps1` | 55 | Markdown renderer, statement detection, fact keys, URL and flag handling, tool-call parsing, tools |
+| `tests/Integration.Tests.ps1` | 45 | `ask` run as a command against a fake Ollama: streaming, history, config, `-Model`, `--check`/`ask-check`, facts, `br`, tools and their safety rules |
+
+```powershell
+Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck   # once
+./tests/run.ps1               # or: ./tests/run.ps1 -Detailed
+```
+
+Each integration test gets its own `ASK_HOME`, so your real `~/.ask.json`,
+history and model cache are never touched, and `ASK_NO_LAUNCH` keeps it from
+opening a browser. Both variables work outside the tests too:
+
+| Variable | Effect |
+|----------|--------|
+| `ASK_HOME` | Directory for `.ask.json`, history and the model cache (default: `~`) |
+| `ASK_NO_LAUNCH` | Print URLs instead of opening them (`br`, `open_url`) |
+
+```mermaid
+flowchart LR
+    R["tests/run.ps1"] --> P["Pester 5"]
+    P --> U["Unit.Tests.ps1\n55 tests"]
+    P --> I["Integration.Tests.ps1\n45 tests"]
+    U -->|"functions lifted\nfrom the AST"| A1["ask.ps1 functions\n+ ask-tools.ps1"]
+    I -->|"pwsh -File ask.ps1 ...\nASK_HOME = temp dir\nASK_NO_LAUNCH = 1"| A2["ask.ps1 / ask-check.ps1\nas a command"]
+    A2 -->|HTTP| M["MockOllama.ps1\nHttpListener on localhost\nscripted replies"]
+    M -->|"request log"| I
+```
+
+---
+
 ## Related
 
 - [CppLocalLlmCodeAssist](https://github.com/cschladetsch/CppLocalLlmCodeAssist) -- the full research/edit/chat engine this wraps

@@ -224,6 +224,7 @@ Config:  ~/.ask.json   (model, tools_model, host, port_direct, port_serve,
                         system, history, history_idle_minutes, tools,
                         confirm_commands, tool_output_chars, facts)
 History: ~/.ask_conversation_state.json
+Env:     ASK_HOME (where those files live), ASK_NO_LAUNCH (don't open URLs)
 
 Examples:
   ask what is 1+2
@@ -354,7 +355,10 @@ function Write-Markdown([string]$text) {
 
 # ── Load ~/.ask.json ──────────────────────────────────────────────────────────
 
-$configPath = Join-Path $HOME ".ask.json"
+# ASK_HOME relocates ask's files (config, history, model cache); the tests use
+# it so they never touch the real ones.
+$AskHome    = if ($env:ASK_HOME) { $env:ASK_HOME } else { $HOME }
+$configPath = Join-Path $AskHome ".ask.json"
 
 $defaults = @{
     model                = "dolphin-8b:latest"
@@ -382,7 +386,14 @@ if (Test-Path $configPath) {
     }
 }
 
-function Test-AskFlag($value) { return $value -in @($true, "true", 1) }
+# A config switch. Not `-in @($true, "true", 1)`: PowerShell compares
+# against $true by casting, so any non-empty string -- even "false" -- was on.
+function Test-AskFlag($value) {
+    if ($value -is [bool])   { return $value }
+    if ($value -is [string]) { return $value.Trim() -in @("true", "1", "yes", "on") }
+    if ($value -is [ValueType]) { try { return [double]$value -ne 0 } catch { return $false } }
+    return $false
+}
 
 # ── Conversation history (~/.ask_conversation_state.json) ─────────────────────
 # A flat list of {role, content} turns, most recent last. Capped to the last
@@ -397,7 +408,7 @@ function Test-AskFlag($value) { return $value -in @($true, "true", 1) }
 # questions as already answered. (The original "re-answers every old
 # question" bug came from flattening history into an /api/generate prompt.)
 
-$historyPath     = Join-Path $HOME ".ask_conversation_state.json"
+$historyPath     = Join-Path $AskHome ".ask_conversation_state.json"
 $maxHistoryTurns = 20   # exchanges, i.e. 40 messages
 $useHistory      = (Test-AskFlag $defaults["history"]) -and -not $NoHistory
 
@@ -643,12 +654,16 @@ function Resolve-AskUrl([string]$u) {
     return $u
 }
 
+# ASK_NO_LAUNCH=1 prints the URL without opening a browser (used by the tests).
+function Open-AskUrl([string]$u) {
+    Write-Host "  > open $u" -ForegroundColor DarkGray
+    if (-not $env:ASK_NO_LAUNCH) { Start-Process $u }
+}
+
 if (-not $NoTools -and $questionText -match '^\s*(?:br|open|go\s+to|goto|visit)\s+(\S+)\s*$') {
     $target = $Matches[1]
     if ($target -match '^(?:[a-z][a-z0-9+.-]*://)?(?:localhost|[\w-]+(?:\.[\w-]+)+)(?::\d+)?(?:[/?#]\S*)?$') {
-        $u = Resolve-AskUrl $target
-        Write-Host "  > open $u" -ForegroundColor DarkGray
-        Start-Process $u
+        Open-AskUrl (Resolve-AskUrl $target)
         return
     }
 }
@@ -793,7 +808,7 @@ $effectiveModel = if ($modelOverride -ne "") { $modelOverride }
                   elseif ($toolsOn -and $defaults["tools_model"] -ne "") { $defaults["tools_model"] }
                   else { $defaults["model"] }
 
-$capsCachePath = Join-Path $HOME ".ask_model_cache.json"
+$capsCachePath = Join-Path $AskHome ".ask_model_cache.json"
 $capsCacheKey  = "$baseUrl|$effectiveModel"
 $capsTtlSecs   = 24 * 3600
 

@@ -76,7 +76,13 @@ cd CppAsk
 
 The installer copies `ask.ps1`, `ask-tools.ps1` and `ask-check.ps1` to `~/bin`, adds it to `PATH`, wires up an `ask` alias in `$PROFILE`, queries `ollama list`, and writes `~/.ask.json`.
 
-See [Architecture](architecture) for the request lifecycle, config resolution, model resolution, the server check, facts, conversation history, and model listing in detail.
+See [Architecture](architecture) for the request lifecycle, config resolution, model resolution, the server check, facts, conversation history, model listing and the test suite in detail.
+
+## Tests
+
+```powershell
+./tests/run.ps1    # 100 Pester tests; no Ollama needed
+```
 
 ## Related
 
