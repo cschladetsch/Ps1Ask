@@ -77,7 +77,7 @@
     ask explain CRTP in modern C++
     ask what does PatchApplier do -Model codellama:7b
     ask -SetModel dolphin-8b:latest
-    ask -Tools browse old.reddit.com
+    ask br old.reddit.com
     ask -Tools summarise https://example.com
     ask -Tools how much free space is on C:
 #>
@@ -163,7 +163,7 @@ History: ~/.ask_conversation_state.json
 Examples:
   ask what is 1+2
   ask what is the rule of five
-  ask -Tools browse old.reddit.com
+  ask br old.reddit.com
   ask explain CRTP -v
 "@
     return
@@ -603,6 +603,43 @@ function Show-Answer([string]$text) {
     }
 }
 
+$askToolNames = @("fetch_url", "open_url", "read_file", "run_command")
+
+function Find-AskToolCall([string]$text) {
+    # 1. Any JSON object (one level of nesting) whose "name" is a known tool.
+    foreach ($m in [regex]::Matches($text, '\{(?:[^{}]|\{[^{}]*\})*\}')) {
+        $o = $null
+        try { $o = $m.Value | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($o.name -and ($askToolNames -contains $o.name)) {
+            return [pscustomobject]@{ name = $o.name; arguments = $o.arguments }
+        }
+    }
+    # 2. tool_name {args} / tool_name({args})
+    $pattern = '\b(' + ($askToolNames -join '|') + ')\b\s*\(?\s*(\{[^{}]*\})'
+    $m = [regex]::Match($text, $pattern)
+    if ($m.Success) {
+        try {
+            $a = $m.Groups[2].Value | ConvertFrom-Json -ErrorAction Stop
+            return [pscustomobject]@{ name = $m.Groups[1].Value; arguments = $a }
+        } catch { }
+    }
+    return $null
+}
+
+# ── "br/open <url>" is handled here, not by the model ─────────────────────────
+# Small models refuse to browse even with tools offered, and there's nothing to
+# decide: just open it. -NoTools turns this off too.
+
+if (-not $NoTools -and $questionText -match '^\s*(?:br|open|go\s+to|goto|visit)\s+(\S+)\s*$') {
+    $target = $Matches[1]
+    if ($target -match '^(?:[a-z][a-z0-9+.-]*://)?(?:localhost|[\w-]+(?:\.[\w-]+)+)(?::\d+)?(?:[/?#]\S*)?$') {
+        $u = Resolve-AskUrl $target
+        Write-Host "  > open $u" -ForegroundColor DarkGray
+        Start-Process $u
+        return
+    }
+}
+
 if ($toolsOn) {
     $toolSpecs = @(
         @{ name = "fetch_url";   arg = "url";     desc = "Download a web page and return its text, to read, check or summarise it." },
@@ -663,20 +700,15 @@ if ($toolsOn) {
             continue
         }
 
-        # Some models (llama3-based ones such as dolphin) emit a tool call as
-        # bare JSON in the message text instead of tool_calls / the TOOL
-        # prefix. Run it rather than printing the JSON as the answer.
-        $bare = ($content.Trim() -replace '^```(?:json)?\s*', '') -replace '\s*```$', ''
-        if ($bare -match '^\{[\s\S]*\}$') {
-            $call = $null
-            try { $call = $bare | ConvertFrom-Json -ErrorAction Stop } catch { }
-            $known = @($toolSpecs | ForEach-Object { $_.name })
-            if ($call -and $call.name -and ($known -contains $call.name)) {
-                $result = Invoke-AskTool $call.name $call.arguments
-                $chatMessages.Add(@{ role = "assistant"; content = $content })
-                $chatMessages.Add(@{ role = "user"; content = "TOOL RESULT ($($call.name)):`n$result`n`nNow answer my request: $questionText" })
-                continue
-            }
+        # Small models rarely follow the tool protocol exactly: they emit bare
+        # JSON, "open_url {...}", or a call inside a code fence, often wrapped
+        # in a refusal. Accept any of those rather than printing them.
+        $call = Find-AskToolCall $content
+        if ($call) {
+            $result = Invoke-AskTool $call.name $call.arguments
+            $chatMessages.Add(@{ role = "assistant"; content = $content })
+            $chatMessages.Add(@{ role = "user"; content = "TOOL RESULT ($($call.name)):`n$result`n`nNow answer my request: $questionText" })
+            continue
         }
 
         if (-not $nativeTools -and $content -match '(?s)TOOL\s*(\{.*\})') {

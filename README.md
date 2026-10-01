@@ -209,7 +209,7 @@ act, not just talk:
 | `run_command` | Runs a PowerShell command and returns its output       |
 
 ```powershell
-ask -Tools browse old.reddit.com            # opens it in your browser
+ask br old.reddit.com                       # opens it in your browser
 ask -Tools summarise https://example.com    # fetches and summarises
 ask -Tools how much free space is on C:     # runs a command
 ```
