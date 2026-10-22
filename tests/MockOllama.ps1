@@ -16,6 +16,10 @@
 #   replies : one entry per /api/chat call, in order; the last one repeats.
 #             A string is the reply text; a hashtable may hold tool_calls.
 #   chat404 : models whose /api/chat call returns "model not found"
+#   delay_ms: wait this long before answering /api/chat (a model that is
+#             slow to load, or a wedged server)
+#   thinking: text streamed in message.thinking before the reply, like a
+#             reasoning model; think_ms is the pause between its pieces
 
 $script:MockDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ask-mock-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $script:MockDir | Out-Null
@@ -86,6 +90,7 @@ function Start-MockOllama {
                     if ($sc.chat404 -and (@($sc.chat404) -contains $j.model)) {
                         Send $ctx 404 ('{"error":"model ''' + $j.model + ''' not found"}'); continue
                     }
+                    if ($sc.delay_ms) { Start-Sleep -Milliseconds ([int]$sc.delay_ms) }
                     $n = @(Get-Content $logPath | Where-Object { $_ -match '"Path":"/api/chat"' }).Count
                     $replies = @(if ($sc.replies) { $sc.replies } else { "Hello from mock." })
                     $r = $replies[[Math]::Min($n - 1, $replies.Count - 1)]
@@ -98,6 +103,13 @@ function Start-MockOllama {
                         $resp.ContentType = "application/x-ndjson"
                         $resp.SendChunked = $true
                         $out = $resp.OutputStream
+                        $think = [string]$sc.thinking
+                        for ($i = 0; $i -lt $think.Length; $i += 7) {
+                            $piece = $think.Substring($i, [Math]::Min(7, $think.Length - $i))
+                            $line = (@{ message = @{ role = "assistant"; content = ""; thinking = $piece }; done = $false } | ConvertTo-Json -Compress) + "`n"
+                            $b = [System.Text.Encoding]::UTF8.GetBytes($line); $out.Write($b, 0, $b.Length); $out.Flush()
+                            if ($sc.think_ms) { Start-Sleep -Milliseconds ([int]$sc.think_ms) }
+                        }
                         $text = [string]$msg.content
                         for ($i = 0; $i -lt $text.Length; $i += 7) {
                             $piece = $text.Substring($i, [Math]::Min(7, $text.Length - $i))

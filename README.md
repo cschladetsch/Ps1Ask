@@ -352,6 +352,7 @@ is optional; these are the defaults:
     "tools":                false,
     "confirm_commands":     true,
     "tool_output_chars":    8000,
+    "timeout_secs":         300,
     "facts":                []
 }
 ```
@@ -366,7 +367,15 @@ is optional; these are the defaults:
 | `tools`                | Tools on by default                                            |
 | `confirm_commands`     | Ask y/N before `run_command`                                   |
 | `tool_output_chars`    | Cap on tool output passed back to the model                    |
+| `timeout_secs`         | Give up after this long with no data from Ollama (0 = never)   |
 | `facts`                | Statements you've told `ask` (see [Facts](#facts)); edit by hand or with `-Fact` / `-Forget` |
+
+While `ask` waits on Ollama it shows a dim status line after two seconds
+(`waiting for <model> 12s`, or `<model> is thinking 8s` while a reasoning
+model streams its thinking), which disappears when the answer starts.
+`timeout_secs` counts only silence: a model that keeps streaming, thinking
+included, is never cut off. Ctrl-C stops a wait at any point and closes the
+connection, so Ollama stops generating too.
 
 CLI parameters always override config for that run. Model capabilities from
 `/api/show` are cached for a day in `~/.ask_model_cache.json`.

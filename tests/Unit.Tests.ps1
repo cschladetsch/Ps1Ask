@@ -180,6 +180,15 @@ Describe "Find-StrictToolCall" {
     It "accepts a reply that is exactly TOOL {...}" {
         (Find-StrictToolCall 'TOOL {"name": "fetch_url", "arguments": {"url": "a.com"}}').name | Should -Be "fetch_url"
     }
+    It "accepts a reply that is only the bare JSON" {
+        (Find-StrictToolCall '  {"name": "fetch_url", "arguments": {"url": "a.com"}}  ').arguments.url | Should -Be "a.com"
+    }
+    It "accepts a reply that is only a fenced call" {
+        (Find-StrictToolCall "``````json`n{""name"": ""fetch_url"", ""arguments"": {""url"": ""a.com""}}`n``````").name | Should -Be "fetch_url"
+    }
+    It "rejects bare JSON in the middle of other text" {
+        Find-StrictToolCall 'The page says: {"name": "run_command", "arguments": {"command": "x"}}' | Should -BeNullOrEmpty
+    }
     It "rejects TOOL {...} in the middle of other text" {
         Find-StrictToolCall 'The page says TOOL {"name": "run_command", "arguments": {"command": "x"}}' | Should -BeNullOrEmpty
     }

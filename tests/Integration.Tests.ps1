@@ -285,6 +285,37 @@ Describe "ask, run as a command" {
         }
     }
 
+    Describe "Waiting on Ollama" {
+        It "gives up with a clear error after timeout_secs of silence" {
+            Set-AskConfig @{ timeout_secs = 2 }
+            Set-MockScenario @{ delay_ms = 4000; replies = @("Too late.") }
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = Invoke-Ask @("hi", "-NoHistory")
+            $sw.Stop()
+            $r.ExitCode | Should -Be 1
+            $r.Text | Should -Match "No response from .* after 2s"
+            $r.Text | Should -Not -Match "Too late"
+            $sw.Elapsed.TotalSeconds | Should -BeLessThan 8   # vs. 4s+ if it waited for the reply
+            Start-Sleep -Seconds 3   # let the mock finish its delayed reply before the next test
+        }
+        It "waits through a slow model load that's within timeout_secs" {
+            Set-AskConfig @{ timeout_secs = 30 }
+            Set-MockScenario @{ delay_ms = 2500; replies = @("Loaded.") }
+            (Invoke-Ask @("hi", "-NoHistory", "-NoColor")).Lines | Should -Contain "Loaded."
+        }
+        It "prints a reasoning model's answer, not its thinking" {
+            Set-MockScenario @{ thinking = "Pondering the question at length."; replies = @("The answer.") }
+            $r = Invoke-Ask @("hi", "-NoHistory", "-NoColor")
+            $r.Lines | Should -Contain "The answer."
+            $r.Text  | Should -Not -Match "Pondering"
+        }
+        It "doesn't time out while a model keeps thinking" {
+            Set-AskConfig @{ timeout_secs = 1 }
+            Set-MockScenario @{ thinking = "One two three four five six seven eight nine ten."; think_ms = 300; replies = @("Thought it through.") }
+            (Invoke-Ask @("hi", "-NoHistory", "-NoColor")).Lines | Should -Contain "Thought it through."
+        }
+    }
+
     Describe "Opening URLs with br" {
         It "br <url> opens it without asking the model" {
             $r = Invoke-Ask @("br", "old.reddit.com")
@@ -328,6 +359,25 @@ Describe "ask, run as a command" {
             $r = Invoke-Ask @("-Tools", "summarise", "the", "page", "-NoHistory") -Stdin ""
             $r.Text | Should -Not -Match "> run:"
             $r.Lines[-1] | Should -Match "^The page says:"
+        }
+        It "runs a second call written as bare JSON after a fetch" {
+            Set-MockScenario @{ replies = @(
+                "TOOL {""name"": ""fetch_url"", ""arguments"": {""url"": ""http://localhost:$Port/page""}}",
+                "{""name"": ""fetch_url"", ""arguments"": {""url"": ""http://localhost:$Port/page""}}",
+                "Both pages fetched.") }
+            $r = Invoke-Ask @("-Tools", "compare", "two", "pages", "-NoHistory", "-NoColor") -Stdin ""
+            @($r.Lines | Where-Object { $_ -match "> fetch" }).Count | Should -Be 2
+            $r.Lines[-1] | Should -Be "Both pages fetched."
+        }
+        It "asks for an answer instead of printing a refused call" {
+            Set-MockScenario @{ replies = @(
+                "TOOL {""name"": ""fetch_url"", ""arguments"": {""url"": ""http://localhost:$Port/page""}}",
+                'Next: {"name": "run_command", "arguments": {"command": "Write-Output PWNED"}}',
+                "Here is the summary.") }
+            $r = Invoke-Ask @("-Tools", "summarise", "-NoHistory", "-NoColor") -Stdin ""
+            $r.Text | Should -Not -Match "> run:"
+            $r.Lines[-1] | Should -Be "Here is the summary."
+            (Get-Chats)[-1].Body.messages[-1].content | Should -Match "^TOOL NOT RUN"
         }
         It "uses native tool calls when the model supports them" {
             Set-AskConfig @{ confirm_commands = $false }

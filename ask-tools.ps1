@@ -64,9 +64,10 @@ function Invoke-AskTool([string]$name, $toolArgs) {
             "fetch_url" {
                 $u = Resolve-AskUrl ([string]$toolArgs.url)
                 Write-Host "  > fetch $u" -ForegroundColor DarkGray
-                $resp = $WebHttp.GetAsync($u).GetAwaiter().GetResult()
+                # Wait-AskTask (ask.ps1) keeps Ctrl-C working during a slow fetch.
+                $resp = Wait-AskTask $WebHttp.GetAsync($u, $script:AskCts.Token) "fetching $u"
                 try {
-                    $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                    $body = Wait-AskTask $resp.Content.ReadAsStringAsync() "fetching $u"
                     if (-not $resp.IsSuccessStatusCode) { return "HTTP $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
                 } finally { $resp.Dispose() }
                 if ($body -match '(?i)<html|<body|<div') { $body = ConvertFrom-Html $body }

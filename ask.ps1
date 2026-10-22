@@ -372,6 +372,7 @@ $defaults = @{
     tools                = $false
     confirm_commands     = $true   # y/N before run_command
     tool_output_chars    = 8000
+    timeout_secs         = 300     # give up after this long with no data from Ollama; 0 = never
     facts                = @()     # statements the user told ask; see "Facts"
 }
 
@@ -490,7 +491,57 @@ $serverName    = if ($Direct) { "Ollama at $baseUrl" } else { "cppcoder at $base
 $Http = [System.Net.Http.HttpClient]::new()
 $Http.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
 
-function Send-Ollama([string]$path, $body, [switch]$Stream) {
+# Every wait on Ollama goes through Wait-AskTask instead of a blocking
+# .GetResult(). A blocking .NET call can't be interrupted, so a wedged server
+# or a model that's slow to load looked like a hang that even Ctrl-C couldn't
+# stop. Polling keeps Ctrl-C working, shows a status line after a couple of
+# seconds, and gives up after timeout_secs without any data. Cancelling the
+# token (or disposing the response) closes the connection, which also stops
+# Ollama generating.
+$script:AskCts      = [System.Threading.CancellationTokenSource]::new()
+$script:StatusOn    = -not [Console]::IsErrorRedirected
+$script:StatusShown = $false
+
+function Show-AskStatus([string]$text) {
+    if (-not $script:StatusOn) { return }
+    $ESC = [char]27
+    try { [Console]::Error.Write("`r$ESC[2K$ESC[2m  $text$ESC[0m") } catch { $script:StatusOn = $false; return }
+    $script:StatusShown = $true
+}
+
+function Clear-AskStatus {
+    if (-not $script:StatusShown) { return }
+    try { [Console]::Error.Write("`r$([char]27)[2K") } catch { }
+    $script:StatusShown = $false
+}
+
+function Get-AskTimeoutHint([string]$what) {
+    $limit = [int]$defaults["timeout_secs"]
+    return ("No response from $serverName after ${limit}s ($what). Ollama may be stuck loading " +
+            "the model or short of memory (see: ollama ps; ask --check). " +
+            "timeout_secs in ~/.ask.json sets the limit, 0 waits forever.")
+}
+
+# Waits for $task, showing "$what Ns" after 2s unless -Quiet (mid-answer, a
+# status line would overwrite the reply). Returns the task's result.
+function Wait-AskTask($task, [string]$what, [switch]$Quiet) {
+    $limit = [int]$defaults["timeout_secs"]
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $task.IsCompleted) {
+        Start-Sleep -Milliseconds 100
+        $secs = [int]$sw.Elapsed.TotalSeconds
+        if (-not $Quiet -and $secs -ge 2) { Show-AskStatus "$what ${secs}s" }
+        if ($limit -gt 0 -and $secs -ge $limit) {
+            $script:AskCts.Cancel()
+            Clear-AskStatus
+            throw (Get-AskTimeoutHint $what)
+        }
+    }
+    if (-not $Quiet) { Clear-AskStatus }
+    return $task.GetAwaiter().GetResult()
+}
+
+function Send-Ollama([string]$path, $body, [switch]$Stream, [string]$What = "") {
     $method = if ($null -eq $body) { [System.Net.Http.HttpMethod]::Get } else { [System.Net.Http.HttpMethod]::Post }
     $req = [System.Net.Http.HttpRequestMessage]::new($method, "$baseUrl$path")
     if ($null -ne $body) {
@@ -498,14 +549,16 @@ function Send-Ollama([string]$path, $body, [switch]$Stream) {
         $req.Content = [System.Net.Http.StringContent]::new($json, [System.Text.Encoding]::UTF8, "application/json")
     }
     $mode = if ($Stream) { [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead } else { [System.Net.Http.HttpCompletionOption]::ResponseContentRead }
+    if ($What -eq "") { $What = "waiting for $serverName" }
     try {
-        $resp = $Http.SendAsync($req, $mode).GetAwaiter().GetResult()
+        $resp = Wait-AskTask $Http.SendAsync($req, $mode, $script:AskCts.Token) $What
     } catch {
+        if ($_.Exception.Message -like "No response from*") { throw }
         $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }
         throw "Could not reach $serverName -- $($e.Message)"
     }
     if (-not $resp.IsSuccessStatusCode) {
-        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $text = Wait-AskTask $resp.Content.ReadAsStringAsync() $What
         $detail = $text.Trim()
         try { $j = $text | ConvertFrom-Json -ErrorAction Stop; if ($j.error) { $detail = [string]$j.error } } catch { }
         if ($detail -eq "") { $detail = "$([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
@@ -516,26 +569,44 @@ function Send-Ollama([string]$path, $body, [switch]$Stream) {
 }
 
 function Invoke-OllamaJson([string]$path, $body = $null) {
-    $resp = Send-Ollama $path $body
-    try { return ($resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json) }
+    $what = if ($path -eq "/api/chat" -and $body.model) { "waiting for $($body.model)" } else { "" }
+    $resp = Send-Ollama $path $body -What $what
+    try { return ((Wait-AskTask $resp.Content.ReadAsStringAsync() $what -Quiet) | ConvertFrom-Json) }
     finally { $resp.Dispose() }
 }
 
-# Streams /api/chat, calling $onToken for each piece of content.
+# Streams /api/chat, calling $onToken for each piece of content. Reasoning
+# models stream message.thinking (often for a long time) before any content;
+# that shows as a "thinking" status rather than silence.
 function Invoke-OllamaChatStream($body, [scriptblock]$onToken) {
-    $resp   = Send-Ollama "/api/chat" $body -Stream
-    $reader = [System.IO.StreamReader]::new($resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
+    $model  = [string]$body.model
+    $resp   = Send-Ollama "/api/chat" $body -Stream -What "waiting for $model"
+    $reader = [System.IO.StreamReader]::new((Wait-AskTask $resp.Content.ReadAsStreamAsync() "waiting for $model"))
+    $sw         = [System.Diagnostics.Stopwatch]::StartNew()
+    $gotContent = $false
+    $thinking   = $false
     try {
-        while ($null -ne ($line = $reader.ReadLine())) {
+        while ($true) {
+            $what = if ($thinking) { "$model is thinking" } else { "waiting for $model" }
+            $line = Wait-AskTask $reader.ReadLineAsync($script:AskCts.Token).AsTask() $what -Quiet:$gotContent
+            if ($null -eq $line) { break }
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             $obj = $null
             try { $obj = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
             if ($obj.error) { throw "/api/chat failed: $($obj.error)" }
+            if (-not $gotContent -and $obj.message.thinking) {
+                $thinking = $true
+                if ($sw.Elapsed.TotalSeconds -ge 1) { Show-AskStatus "$model is thinking $([int]$sw.Elapsed.TotalSeconds)s" }
+            }
             $token = $obj.message.content
-            if ($token) { & $onToken $token }
+            if ($token) {
+                if (-not $gotContent) { Clear-AskStatus; $gotContent = $true }
+                & $onToken $token
+            }
             if ($obj.done -eq $true) { break }
         }
     } finally {
+        Clear-AskStatus
         $reader.Dispose()
         $resp.Dispose()
     }
