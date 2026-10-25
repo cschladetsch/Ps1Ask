@@ -58,10 +58,24 @@ function Resolve-AskPath([string]$Path) {
     return $full
 }
 
+# Reads one argument from a tool call. Never use $a.length or $a.count for
+# this: on an object without that property PowerShell answers 1 (the intrinsic
+# member for a single object), not $null.
+function Get-AskToolArg($a, [string]$Name) {
+    if ($null -eq $a) { return $null }
+    if ($a -is [System.Collections.IDictionary]) {
+        if ($a.Contains($Name)) { return $a[$Name] }
+        return $null
+    }
+    $p = $a.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
 function Invoke-AskListDir($a) {
-    $dir = Resolve-AskPath ([string]$a.path)
+    $dir = Resolve-AskPath ([string](Get-AskToolArg $a "path"))
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return "error: not a folder: $dir" }
-    $recurse = Test-AskFlag $a.recursive
+    $recurse = Test-AskFlag (Get-AskToolArg $a "recursive")
     $items = if ($recurse) { Get-ChildItem -LiteralPath $dir -Force -Recurse -ErrorAction SilentlyContinue | Select-Object -First 500 }
              else          { Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Select-Object -First 500 }
     $lines = foreach ($i in $items) {
@@ -73,10 +87,12 @@ function Invoke-AskListDir($a) {
 }
 
 function Invoke-AskReadFile($a) {
-    $file = Resolve-AskPath ([string]$a.path)
+    $file = Resolve-AskPath ([string](Get-AskToolArg $a "path"))
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return "error: not a file: $file" }
-    $offset = if ($a.offset) { [int]$a.offset } else { 0 }
-    $length = if ($a.length) { [int]$a.length } else { Get-AskOutputLimit }
+    $offArg = Get-AskToolArg $a "offset"
+    $lenArg = Get-AskToolArg $a "length"
+    $offset = if ($offArg) { [Math]::Max(0, [int]$offArg) } else { 0 }
+    $length = if ($lenArg -and [int]$lenArg -gt 0) { [int]$lenArg } else { Get-AskOutputLimit }
     $text   = [System.IO.File]::ReadAllText($file)
     if ($text.Contains([char]0)) { return "error: $file looks binary" }
     if ($offset -ge $text.Length -and $text.Length -gt 0) { return "error: offset $offset is past the end ($($text.Length) characters)" }
@@ -87,10 +103,12 @@ function Invoke-AskReadFile($a) {
 }
 
 function Invoke-AskSearchFiles($a) {
-    $root = Resolve-AskPath $(if ($a.path) { [string]$a.path } else { "." })
-    $pat  = [string]$a.pattern
+    $pathArg = Get-AskToolArg $a "path"
+    $root = Resolve-AskPath $(if ($pathArg) { [string]$pathArg } else { "." })
+    $pat  = [string](Get-AskToolArg $a "pattern")
     if ($pat -eq "") { return "error: pattern is empty" }
-    $glob = if ($a.glob) { [string]$a.glob } else { "" }
+    $globArg = Get-AskToolArg $a "glob"
+    $glob = if ($globArg) { [string]$globArg } else { "" }
     if (Get-Command rg -ErrorAction SilentlyContinue) {
         $rgArgs = @("--line-number", "--no-heading", "--max-count", "20", "--max-columns", "200", "--max-columns-preview")
         if ($glob -ne "") { $rgArgs += @("--glob", $glob) }
@@ -106,11 +124,15 @@ function Invoke-AskSearchFiles($a) {
     return Limit-AskText ($out -join "`n")
 }
 
+# Separate function so tests can stand in for a console.
+function Test-AskCanPrompt { return -not [Console]::IsInputRedirected }
+
 function Invoke-AskWriteFile($a) {
-    $file    = Resolve-AskPath ([string]$a.path)
-    $content = [string]$a.content
+    $file    = Resolve-AskPath ([string](Get-AskToolArg $a "path"))
+    $content = [string](Get-AskToolArg $a "content")
     $exists  = Test-Path -LiteralPath $file
     if (Test-AskFlag $defaults["confirm_writes"]) {
+        if (-not (Test-AskCanPrompt)) { return "denied: no interactive console to confirm the write on" }
         $verb = if ($exists) { "overwrite" } else { "create" }
         $old  = if ($exists) { " (currently {0:N0} bytes)" -f (Get-Item -LiteralPath $file).Length } else { "" }
         Write-Host "  write_file wants to $verb $file$old with $($content.Length) characters" -ForegroundColor Yellow

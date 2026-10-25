@@ -224,6 +224,27 @@ Describe "Invoke-AskTool" {
     It "returns an error for a missing file" {
         Invoke-AskTool "read_file" @{ path = (Join-Path $TestDrive "nope.txt") } 6>$null | Should -BeLike "Error:*"
     }
+    # The suite's tool_output_chars is 40, which a temp-folder path alone can
+    # use up, so these two raise it for the call.
+    It "lists a folder through the file tools" {
+        Set-Content (Join-Path $TestDrive "listed.txt") "x" -NoNewline
+        $saved = $script:defaults["tool_output_chars"]
+        $script:defaults["tool_output_chars"] = 4000
+        try { $out = Invoke-AskTool "list_dir" @{ path = $TestDrive } 6>$null }
+        finally { $script:defaults["tool_output_chars"] = $saved }
+        $out | Should -Match "listed\.txt"
+    }
+    It "searches files through the file tools" {
+        Set-Content (Join-Path $TestDrive "findme.txt") "needle in a haystack"
+        $saved = $script:defaults["tool_output_chars"]
+        $script:defaults["tool_output_chars"] = 4000
+        try { $out = Invoke-AskTool "search_files" @{ pattern = "needle"; path = $TestDrive } 6>$null }
+        finally { $script:defaults["tool_output_chars"] = $saved }
+        $out | Should -Match "findme\.txt"
+    }
+    It "offers the file tools to the model" {
+        foreach ($n in "list_dir", "read_file", "search_files", "write_file") { $AskToolNames | Should -Contain $n }
+    }
     It "runs a command when confirmation is off" {
         $r = Invoke-AskTool "run_command" @{ command = "Write-Output tool-ran" } 6>$null
         $r | Should -Match "exit code: 0"

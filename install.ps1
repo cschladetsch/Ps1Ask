@@ -3,7 +3,7 @@
     Installs 'ask' to ~/bin and writes ~/.ask.json with sensible defaults.
  
 .DESCRIPTION
-    1. Copies ask.ps1, ask-tools.ps1 and ask-check.ps1 to the install directory (default: ~/bin)
+    1. Copies ask.ps1, ask-tools.ps1, ask-fs-tools.ps1 and ask-check.ps1 to the install directory (default: ~/bin)
     2. Adds the directory to user PATH permanently
     3. Adds a global 'ask' function + alias to $PROFILE
     4. Prompts for config values and writes ~/.ask.json
@@ -78,6 +78,14 @@ if (-not (Test-Path $toolsSrc)) {
     exit 1
 }
 Copy-Item $toolsSrc (Join-Path $Destination "ask-tools.ps1") -Force
+
+# The file tools (list_dir, read_file, search_files, write_file), loaded by ask-tools.ps1.
+$fsToolsSrc = Join-Path $PSScriptRoot "ask-fs-tools.ps1"
+if (-not (Test-Path $fsToolsSrc)) {
+    Write-Error "ask-fs-tools.ps1 not found at $fsToolsSrc -- run install.ps1 from the repo root."
+    exit 1
+}
+Copy-Item $fsToolsSrc (Join-Path $Destination "ask-fs-tools.ps1") -Force
 
 # ask-check is a thin wrapper over `ask --check`.
 $checkSrc = Join-Path $PSScriptRoot "ask-check.ps1"

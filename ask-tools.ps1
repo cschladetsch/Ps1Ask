@@ -17,16 +17,25 @@
 # Relies on ask.ps1 for: $defaults, $effectiveModel, $questionText,
 # Invoke-OllamaJson, Test-AskFlag, Resolve-AskUrl and Open-AskUrl.
 
+# The file tools (list_dir, read_file, search_files, write_file) have several
+# arguments each and carry their own schemas; they live in ask-fs-tools.ps1.
+$AskFsToolsScript = Join-Path $PSScriptRoot "ask-fs-tools.ps1"
+if (-not (Test-Path $AskFsToolsScript)) {
+    throw "Tools need ask-fs-tools.ps1 next to ask-tools.ps1 (re-run install.ps1)."
+}
+. $AskFsToolsScript
+
 $AskToolSpecs = @(
     @{ name = "fetch_url";   arg = "url";     desc = "Download a web page and return its text, to read, check or summarise it." },
     @{ name = "open_url";    arg = "url";     desc = "Open a URL in the user's web browser. Use when asked to open, browse, show or go to a site." },
-    @{ name = "read_file";   arg = "path";    desc = "Return the contents of a local text file." },
     @{ name = "run_command"; arg = "command"; desc = "Run a PowerShell command on the user's Windows machine and return its output. The user is asked to approve it first." }
 )
-$AskToolNames = @($AskToolSpecs | ForEach-Object { $_.name })
+$AskFsToolSchemas = @(Get-AskFsToolSchemas)
+$AskFsToolNames   = @($AskFsToolSchemas | ForEach-Object { $_.function.name })
+$AskToolNames     = @($AskToolSpecs | ForEach-Object { $_.name }) + $AskFsToolNames
 
 # Tools whose results bring outside text into the conversation.
-$AskTaintingTools = @("fetch_url", "read_file")
+$AskTaintingTools = @("fetch_url", "read_file", "search_files")
 
 $WebHttp = [System.Net.Http.HttpClient]::new()
 $WebHttp.Timeout = [TimeSpan]::FromSeconds(30)
@@ -60,6 +69,12 @@ function Confirm-AskCommand([string]$cmd) {
 
 function Invoke-AskTool([string]$name, $toolArgs) {
     try {
+        if ($AskFsToolNames -contains $name) {
+            $what = Get-AskToolArg $toolArgs "path"
+            if (-not $what) { $what = Get-AskToolArg $toolArgs "pattern" }
+            Write-Host "  > $name $what" -ForegroundColor DarkGray
+            return [string](Invoke-AskFsTool $name $toolArgs)
+        }
         switch ($name) {
             "fetch_url" {
                 $u = Resolve-AskUrl ([string]$toolArgs.url)
@@ -77,12 +92,6 @@ function Invoke-AskTool([string]$name, $toolArgs) {
                 $u = Resolve-AskUrl ([string]$toolArgs.url)
                 Open-AskUrl $u
                 return "Opened $u in the user's default browser."
-            }
-            "read_file" {
-                $path = [string]$toolArgs.path
-                if ($path.StartsWith("~")) { $path = Join-Path $HOME $path.Substring(1).TrimStart('/', '\') }
-                Write-Host "  > read $path" -ForegroundColor DarkGray
-                return Limit-Text (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
             }
             "run_command" {
                 $cmd = [string]$toolArgs.command
@@ -124,11 +133,18 @@ function Find-AskToolCall([string]$text) {
     return $null
 }
 
-# An exact protocol reply: the whole message is TOOL {...}.
+# A reply that is nothing but a tool call: exactly TOOL {...}, or only the bare
+# JSON object, or only that object in a code fence. A call quoted in the middle
+# of other text does not count.
 function Find-StrictToolCall([string]$text) {
-    if ($text -notmatch '^\s*TOOL\s*(\{[\s\S]*\})\s*$') { return $null }
+    $t = $text.Trim()
+    $json = $null
+    if     ($t -match '^TOOL\s*(\{[\s\S]*\})$')                  { $json = $Matches[1] }
+    elseif ($t -match '^\{[\s\S]*\}$')                           { $json = $t }
+    elseif ($t -match '^```[\w-]*\s*(\{[\s\S]*\})\s*```$')       { $json = $Matches[1] }
+    if (-not $json) { return $null }
     $o = $null
-    try { $o = $Matches[1] | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    try { $o = $json | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
     if ($o.name -and ($AskToolNames -contains $o.name)) {
         return [pscustomobject]@{ name = $o.name; arguments = $o.arguments }
     }
@@ -159,13 +175,19 @@ function Invoke-AskToolLoop {
                     }
                 }
             }
-        })
+        }) + $AskFsToolSchemas
     } else {
+        $fsLines = foreach ($s in $AskFsToolSchemas) {
+            $props = @($s.function.parameters.properties.Keys | Sort-Object)
+            $shape = ($props | ForEach-Object { '"' + $_ + '": "..."' }) -join ", "
+            "- $($s.function.name) {$shape}: $($s.function.description)"
+        }
+        $specLines = foreach ($t in $AskToolSpecs) { "- $($t.name) {""$($t.arg)"": ""...""}: $($t.desc)" }
         $protocol = "To use a tool, reply with ONLY one line of the form`n" +
                     'TOOL {"name": "<tool>", "arguments": {...}}' + "`n" +
                     "and nothing else. The result comes back in a message starting with TOOL RESULT. " +
                     "When you have what you need, reply normally without TOOL. Tools:`n" +
-                    (($AskToolSpecs | ForEach-Object { "- $($_.name) {""$($_.arg)"": ""...""}: $($_.desc)" }) -join "`n")
+                    ((@($specLines) + @($fsLines)) -join "`n")
         if ($chat.Count -gt 0 -and $chat[0].role -eq "system") {
             $chat[0] = @{ role = "system"; content = $chat[0].content + "`n`n" + $protocol }
         } else {
@@ -174,6 +196,7 @@ function Invoke-AskToolLoop {
     }
 
     $tainted   = $false
+    $refusals  = 0
     $maxRounds = 8
     for ($round = 1; $round -le $maxRounds; $round++) {
         $req = @{ model = $effectiveModel; messages = $chat; stream = $false }
@@ -199,6 +222,16 @@ function Invoke-AskToolLoop {
             if ($AskTaintingTools -contains $call.name) { $tainted = $true }
             $chat.Add(@{ role = "assistant"; content = $content })
             $chat.Add(@{ role = "user"; content = "TOOL RESULT ($($call.name)):`n$result`n`nNow answer my request: $questionText" })
+            continue
+        }
+
+        # After outside text has come in, a call written inside other text is not
+        # run. Ask once for a plain answer rather than printing the call as the
+        # reply; if the model writes it again, print what it said.
+        if ($tainted -and $refusals -lt 1 -and (Find-AskToolCall $content)) {
+            $refusals++
+            $chat.Add(@{ role = "assistant"; content = $content })
+            $chat.Add(@{ role = "user"; content = "TOOL NOT RUN: a tool call inside other text is ignored once a page or file has been read. Do not call a tool. Answer my request in plain text: $questionText" })
             continue
         }
 

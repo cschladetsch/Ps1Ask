@@ -390,6 +390,39 @@ Describe "ask, run as a command" {
             (Get-Chats)[0].Body.Keys | Should -Contain "tools"
             @((Get-Chats)[1].Body.messages | Where-Object role -eq "tool")[0].content | Should -Match "NATIVE"
         }
+        It "lists a folder with a native list_dir call" {
+            $dir = Join-Path $TestDrive "listme"
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            Set-Content (Join-Path $dir "marker-file.txt") "x"
+            Set-MockScenario @{
+                caps    = @{ "qwen2.5:7b" = @("completion", "tools") }
+                replies = @(@{ content = ""; tool_calls = @(@{ function = @{ name = "list_dir"; arguments = @{ path = $dir } } }) }, "Listed.")
+            }
+            $r = Invoke-Ask @("-Tools", "-Model", "qwen2.5:7b", "what", "is", "there", "-NoHistory") -Stdin ""
+            $r.Lines[-1] | Should -Be "Listed."
+            @((Get-Chats)[1].Body.messages | Where-Object role -eq "tool")[0].content | Should -Match "marker-file\.txt"
+        }
+        It "offers the file tools natively and describes them in the TOOL protocol" {
+            Set-MockScenario @{ caps = @{ "qwen2.5:7b" = @("completion", "tools") }; replies = @("Fine.") }
+            Invoke-Ask @("-Tools", "-Model", "qwen2.5:7b", "hi", "-NoHistory") -Stdin "" | Out-Null
+            $names = @((Get-Chats)[0].Body.tools | ForEach-Object { $_.function.name })
+            $names | Should -Contain "search_files"
+            $names | Should -Contain "write_file"
+
+            Set-MockScenario @{ replies = @("Plain.") }
+            Invoke-Ask @("-Tools", "hi", "-NoHistory") -Stdin "" | Out-Null
+            Get-SystemPrompt (Get-Chats)[0] | Should -Match "list_dir"
+        }
+        It "won't write a file when there is no console to confirm on" {
+            $target = Join-Path $TestDrive "should-not-exist.txt"
+            Set-MockScenario @{
+                caps    = @{ "qwen2.5:7b" = @("completion", "tools") }
+                replies = @(@{ content = ""; tool_calls = @(@{ function = @{ name = "write_file"; arguments = @{ path = $target; content = "hi" } } }) }, "Done.")
+            }
+            Invoke-Ask @("-Tools", "-Model", "qwen2.5:7b", "write", "it", "-NoHistory") -Stdin "" | Out-Null
+            Test-Path $target | Should -BeFalse
+            @((Get-Chats)[1].Body.messages | Where-Object role -eq "tool")[0].content | Should -Match "^denied"
+        }
         It "uses tools_model when tools are on" {
             Set-AskConfig @{ tools_model = "qwen2.5:7b" }
             Set-MockScenario @{ caps = @{ "qwen2.5:7b" = @("completion", "tools") }; replies = @("Fine.") }
