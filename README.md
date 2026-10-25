@@ -97,7 +97,7 @@ cd CppAsk
 
 The installer:
 
-1. Copies `ask.ps1`, `ask-tools.ps1` and `ask-check.ps1` to `~/bin` (or `-Destination` of your choice)
+1. Copies `ask.ps1`, `ask-tools.ps1`, `ask-fs-tools.ps1` and `ask-check.ps1` to `~/bin` (or `-Destination` of your choice)
 2. Adds `~/bin` to your user `PATH` permanently
 3. Adds a global `ask` function and alias to `$PROFILE`
 4. Queries `ollama list` and prompts for config values
@@ -209,7 +209,7 @@ ask 'what''s the difference between #pragma once and include guards'
 | `-NoHistory`  | off                  | One-shot -- don't read or write history for this call     |
 | `-ClearHistory` |                    | Wipe history and exit, without asking anything            |
 | `-v`, `--verbose` | off        | Ask for a thorough explanation with examples              |
-| `-Tools`      | off                  | Let the model browse, read files and run commands         |
+| `-Tools`      | off                  | Let the model browse, list/read/search/write files and run commands; statements aren't saved as facts |
 | `-NoTools`    | off                  | Tools (and `br <url>`) off for this call                  |
 | `-Help`, `--help`, `-h` |            | Print a usage summary, then exit                          |
 | `-Version`, `--version` |            | Print version, commit and install time, then exit         |
@@ -307,7 +307,10 @@ counts when it:
 and is not a question: no trailing `?`, doesn't start with a question or
 request word (`what`, `is`, `explain`, `show`, ...), and doesn't mention
 `help`, `bug`, `error`, `failing` and so on. So `I have a question about
-templates` and `my build is failing` still go to the model.
+templates` and `my build is failing` still go to the model. A statement that
+mentions a file path (`C:\src\foo.txt`, `~/repos`, `./x`, `src/main.cpp`) is
+treated as a request about files, not a fact, and nothing is saved as a fact
+when `-Tools` is on the command line.
 
 Anything else can be saved with `-Fact` (`ask -Fact the server is at
 10.0.0.5`). If something is saved by mistake, `ask -Forget <n>` removes it
@@ -320,7 +323,7 @@ flowchart TD
     NF -->|yes| Q["send to the model as a question"]
     NF -->|no| R{"starts with\nremember (that)?"}
     R -->|yes| SAVE
-    R -->|no| QM{"ends with ?, starts with a\nquestion/request word, or mentions\nhelp/bug/error/failing...?"}
+    R -->|no| QM{"ends with ?, starts with a\nquestion/request word, mentions\nhelp/bug/error/failing, or a file path?"}
     QM -->|yes| Q
     QM -->|no| FP{"first person?\nmy X is ... / I live, work,\nam, have, use, prefer ..."}
     FP -->|no| Q
@@ -351,6 +354,8 @@ is optional; these are the defaults:
     "history_idle_minutes": 30,
     "tools":                false,
     "confirm_commands":     true,
+    "confirm_writes":       true,
+    "allowed_roots":        [],
     "tool_output_chars":    8000,
     "timeout_secs":         300,
     "facts":                []
@@ -366,6 +371,8 @@ is optional; these are the defaults:
 | `history_idle_minutes` | Start a fresh thread after this long without a question (0 = never) |
 | `tools`                | Tools on by default                                            |
 | `confirm_commands`     | Ask y/N before `run_command`                                   |
+| `confirm_writes`       | Ask y/N before `write_file`                                    |
+| `allowed_roots`        | Folders the file tools may touch (`~` works); empty = anywhere |
 | `tool_output_chars`    | Cap on tool output passed back to the model                    |
 | `timeout_secs`         | Give up after this long with no data from Ollama (0 = never)   |
 | `facts`                | Statements you've told `ask` (see [Facts](#facts)); edit by hand or with `-Fact` / `-Forget` |
@@ -391,27 +398,64 @@ act, not just talk:
 |---------------|--------------------------------------------------------|
 | `fetch_url`   | Downloads a page and hands its text to the model       |
 | `open_url`    | Opens a URL in your default browser                    |
-| `read_file`   | Reads a local text file                                |
+| `list_dir`    | Lists a folder (optionally recursive, up to 500 entries) |
+| `read_file`   | Reads a local text file; long files come back in chunks (`offset`, `length`) and binary files are refused |
+| `search_files`| Searches file contents for a regex under a folder (uses `rg` if installed, else `Select-String`), optional glob |
+| `write_file`  | Creates or overwrites a text file (UTF-8, no BOM); asks y/N first |
 | `run_command` | Runs a PowerShell command and returns its output       |
 
 ```powershell
 ask br old.reddit.com                       # opens it in your browser
 ask -Tools summarise https://example.com    # fetches and summarises
 ask -Tools how much free space is on C:     # runs a command
+ask -Tools list the files in ~/local/repos/Ps1Ask
+ask -Tools find where confirm_writes is used in ~/local/repos/Ps1Ask
+ask -Tools write a .gitignore for a CMake project to ./.gitignore
 ```
 
-Each tool call is echoed in grey (`> fetch ...`). `run_command` shows the
-command and asks `run it? [y/N]` first; with no interactive console it is
-refused. Set `"confirm_commands": false` to skip the prompt.
+Each tool call is echoed in grey (`> fetch ...`, `> list_dir ...`).
+`run_command` shows the command and asks `run it? [y/N]` first, and
+`write_file` shows the path and size and asks `Allow? [y/N]`; with no
+interactive console both are refused. Set `"confirm_commands": false` or
+`"confirm_writes": false` to skip the prompts.
+
+### File tools
+
+The file tools live in `ask-fs-tools.ps1`, which `ask-tools.ps1` loads. Paths
+may be relative to the current folder, absolute, or start with `~`. Set
+`"allowed_roots"` to fence them in:
+
+```json
+{ "allowed_roots": ["~/local/repos", "D:\\Downloads"] }
+```
+
+With roots set, anything outside them is refused, including `..` escapes,
+sibling folders that share a prefix (`repos-old`), and symlinks or junctions
+that point out of a root. With no roots, the file tools can reach anything
+you can. `read_file` and `search_files` count as bringing outside text into
+the conversation (see below).
 
 Models that advertise tool support in Ollama use native tool calling; others
 (e.g. dolphin) get a text `TOOL {...}` protocol and tend to ignore it, so
 `ask` warns and suggests setting `tools_model` to one that supports tools
-(e.g. `qwen2.5:7b`). Loosely written calls in the reply text (bare JSON,
-`open_url {...}`, a call inside a code fence) are accepted too, but only until
-fetched or file content has entered the conversation: after that, only a
-native call or an exact `TOOL {...}` reply counts, so a web page can't get a
-command run by having the model quote it.
+(e.g. `qwen2.5:7b`). `ask-setup-tools.ps1` does that in one step: it pulls
+the model if needed, checks that Ollama reports the `tools` capability, and
+saves `tools_model` (other keys and a `.bak` of the old file are kept;
+`-EnableTools` also sets `"tools": true`).
+
+Loosely written calls in the reply text (bare JSON, `open_url {...}`, a call
+inside a code fence) are accepted too, but only until fetched or file content
+has entered the conversation. After that, only a native call or a reply that is
+*nothing but* a call counts: exactly `TOOL {...}`, a bare JSON object, or one
+fenced block. A call quoted in the middle of other text is not run, so a web
+page can't get a command run by having the model quote it. When that happens
+`ask` sends the model one `TOOL NOT RUN ...` message asking for a plain-text
+answer, and prints whatever it says next.
+
+With tools on, the system prompt also carries your local date and time, so
+"what time is it" is answered directly, and tells the model to use
+`run_command` or the file tools for questions about the machine and
+`fetch_url` only for web pages.
 
 Tool output is capped at `tool_output_chars`. With tools on in config,
 `-NoTools` turns them off for one call. The tool loop lives in
@@ -448,17 +492,24 @@ ask -Models                    # list models on the server (* marks the default)
 
 ## Tests
 
-100 Pester tests, none of which need a real Ollama:
+About 165 Pester tests, none of which need a real Ollama:
 
-| File | Tests | What |
-|------|-------|------|
-| `tests/Unit.Tests.ps1` | 55 | Markdown renderer, statement detection, fact keys, URL and flag handling, tool-call parsing, tools |
-| `tests/Integration.Tests.ps1` | 45 | `ask` run as a command against a fake Ollama: streaming, history, config, `-Model`, `--check`/`ask-check`, facts, `br`, tools and their safety rules |
+| File | What |
+|------|------|
+| `tests/Unit.Tests.ps1` | Markdown renderer, statement detection, fact keys, URL and flag handling, tool-call parsing, tools |
+| `tests/Integration.Tests.ps1` | `ask` run as a command against a fake Ollama: streaming, history, config, `-Model`, `--check`/`ask-check`, facts, `br`, tools and their safety rules |
+| `tests/ask-fs-tools.Tests.ps1` | The file tools (path resolution and `allowed_roots`, `list_dir`, `read_file`, `search_files`, `write_file` confirmation) and fact detection around paths and `-Tools` |
 
 ```powershell
 Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck   # once
 ./tests/run.ps1               # prints each test as it finishes; -Quiet for failures only
+./ask-tests.ps1               # same suite from the repo root, with filters
+./ask-tests.ps1 -File fs -Detailed     # one test file (name contains "fs")
+./ask-tests.ps1 write_file             # tests whose name matches
 ```
+
+`ask-tests.ps1` exits 0 when everything passes, 1 on any failure and 2 for setup
+problems (no Pester 5, no `tests` folder, no file matching `-File`).
 
 Each integration test gets its own `ASK_HOME`, so your real `~/.ask.json`,
 history and model cache are never touched, and `ASK_NO_LAUNCH` keeps it from
@@ -471,9 +522,11 @@ opening a browser. Both variables work outside the tests too:
 
 ```mermaid
 flowchart LR
-    R["tests/run.ps1"] --> P["Pester 5"]
-    P --> U["Unit.Tests.ps1\n55 tests"]
-    P --> I["Integration.Tests.ps1\n45 tests"]
+    R["tests/run.ps1\nask-tests.ps1"] --> P["Pester 5"]
+    P --> U["Unit.Tests.ps1"]
+    P --> I["Integration.Tests.ps1"]
+    P --> F["ask-fs-tools.Tests.ps1"]
+    F -->|"dot-sourced"| A3["ask-fs-tools.ps1"]
     U -->|"functions lifted\nfrom the AST"| A1["ask.ps1 functions\n+ ask-tools.ps1"]
     I -->|"pwsh -File ask.ps1 ...\nASK_HOME = temp dir\nASK_NO_LAUNCH = 1"| A2["ask.ps1 / ask-check.ps1\nas a command"]
     A2 -->|HTTP| M["MockOllama.ps1\nHttpListener on localhost\nscripted replies"]
