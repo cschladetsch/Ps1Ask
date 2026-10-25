@@ -60,9 +60,11 @@
     Wipe conversation history and exit without asking anything.
 
 .PARAMETER Tools
-    Give the model tools (fetch_url, open_url, read_file, run_command) for
-    this call.  Set "tools": true in ~/.ask.json to make it the default.
-    run_command asks y/N before running anything.
+    Give the model tools (fetch_url, open_url, list_dir, read_file,
+    search_files, write_file, run_command) for this call.  Set "tools": true
+    in ~/.ask.json to make it the default.  run_command and write_file ask
+    y/N first; "allowed_roots" in ~/.ask.json limits the file tools to the
+    listed folders.  Statements are never saved as facts when -Tools is on.
 
 .PARAMETER NoTools
     Turn tools off for this call when they're on in config.  Also turns
@@ -175,7 +177,7 @@ Usage:
 
 Answering:
   -v, --verbose           ask for a thorough explanation
-  -Tools                  let the model browse, read files, run commands
+  -Tools                  let the model browse, read/search/write files, run commands
   -NoTools                tools off for this call (if on in config)
   -Model <tag>            model to use for this call (installed tag)
   -System <text>          extra system prompt
@@ -217,12 +219,15 @@ Quoting: PowerShell reads the words first. Quote the question if it has
   e.g.  ask 'what''s a #pragma once'
 
 Tools (off by default; -Tools or "tools": true): fetch_url, open_url,
-read_file, run_command. run_command asks y/N first. Set "tools_model" to a
-model with native tool support (e.g. qwen2.5:7b) to use it with -Tools.
+list_dir, read_file, search_files, write_file, run_command. run_command and
+write_file ask y/N first. "allowed_roots" limits the file tools to those
+folders. Set "tools_model" to a model with native tool support (e.g.
+qwen2.5:7b) to use it with -Tools.
 
 Config:  ~/.ask.json   (model, tools_model, host, port_direct, port_serve,
                         system, history, history_idle_minutes, tools,
-                        confirm_commands, tool_output_chars, facts)
+                        confirm_commands, confirm_writes, allowed_roots,
+                        tool_output_chars, facts)
 History: ~/.ask_conversation_state.json
 Env:     ASK_HOME (where those files live), ASK_NO_LAUNCH (don't open URLs)
 
@@ -372,7 +377,9 @@ $defaults = @{
     tools                = $false
     confirm_commands     = $true   # y/N before run_command
     tool_output_chars    = 8000
-    timeout_secs         = 300     # give up after this long with no data from Ollama; 0 = never
+    confirm_writes       = $true   # y/N before write_file
+    allowed_roots        = @()     # folders the file tools may touch; empty = anywhere
+    timeout_secs        = 300     # give up after this long with no data from Ollama; 0 = never
     facts                = @()     # statements the user told ask; see "Facts"
 }
 
@@ -814,6 +821,10 @@ function Get-AskStatement([string]$text) {
         return $null
     }
 
+    # Anything that mentions a file path is a request about files, not a fact.
+    if ($t -match '(?:^|\s)(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|[\\/])\S' -or
+        $t -match '\S[\\/]\S+\.\w{1,6}\b') { return $null }
+
     $firstPerson = '^(?:(?:my|our)\s+[\w''-]+(?:\s+[\w''-]+){0,3}\s+(?:is|are|was|were)\s+\S' +
                    '|i\s+(?:am|have|live|work|use|prefer|like|love|hate|dislike|own|run|study|speak|code|write|play|was\s+born)\b\s*\S' +
                    '|i''m\s+\S|im\s+\S|i''ve\s+\S)'
@@ -859,7 +870,7 @@ if ($Fact) {
     return
 }
 
-if (-not $NoFacts) {
+if (-not $NoFacts -and -not $Tools) {
     $statement = Get-AskStatement $questionText
     if ($statement) {
         Add-AskFact $statement
@@ -934,10 +945,11 @@ if ($toolsOn -and $modelCaps.Count -gt 0 -and -not $nativeTools) {
 # only made small models worse. Only -v and -Tools add a line.
 
 $verboseRule = "Explain thoroughly, with code examples where useful."
-$toolRule    = "You have tools: you can fetch web pages, open URLs in the user's browser, read " +
-               "local files and run PowerShell commands. When a request needs one (browse, open, " +
-               "fetch, look up, read, run, check something on this machine), use a tool instead " +
-               "of saying you can't, then answer from its result."
+$toolRule    = "You have tools: you can fetch web pages, open URLs in the user's browser, list " +
+               "folders, read, search and write local files, and run PowerShell commands. When a " +
+               "request needs one (browse, open, fetch, look up, list, read, find, write, run, " +
+               "check something on this machine), use a tool instead of saying you can't, then " +
+               "answer from its result. Relative paths are relative to the user's current folder."
 
 $userSystem = if ($System -ne "") { $System } else { $defaults["system"] }
 $sysParts = @()
