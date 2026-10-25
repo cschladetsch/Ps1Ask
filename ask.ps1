@@ -949,7 +949,11 @@ $toolRule    = "You have tools: you can fetch web pages, open URLs in the user's
                "folders, read, search and write local files, and run PowerShell commands. When a " +
                "request needs one (browse, open, fetch, look up, list, read, find, write, run, " +
                "check something on this machine), use a tool instead of saying you can't, then " +
-               "answer from its result. Relative paths are relative to the user's current folder."
+               "answer from its result. Relative paths are relative to the user's current folder. " +
+               "The user's local date and time is " + (Get-Date -Format "dddd d MMMM yyyy, HH:mm (UTC zzz)") +
+               ": answer questions about the current time or date from that. For anything about " +
+               "this machine (disk space, processes, files) use run_command or the file tools; " +
+               "fetch_url is only for web pages the user asks about."
 
 $userSystem = if ($System -ne "") { $System } else { $defaults["system"] }
 $sysParts = @()

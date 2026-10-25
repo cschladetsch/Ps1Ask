@@ -429,5 +429,17 @@ Describe "ask, run as a command" {
             Invoke-Ask @("-Tools", "hi", "-NoHistory") -Stdin "" | Out-Null
             (Get-Chats)[0].Body.model | Should -Be "qwen2.5:7b"
         }
+        It "tells a tool-using model the local date and time, and not to fetch_url for machine questions" {
+            Set-MockScenario @{ replies = @("Fine.") }
+            Invoke-Ask @("-Tools", "what", "time", "is", "it", "-NoHistory") -Stdin "" | Out-Null
+            $sys = Get-SystemPrompt (Get-Chats)[0]
+            $sys | Should -Match "local date and time is \w+ \d{1,2} \w+ \d{4}, \d{2}:\d{2} \(UTC [+-]\d{2}:\d{2}\)"
+            $sys | Should -Match "fetch_url is only for web pages"
+        }
+        It "does not add the time to a plain question" {
+            Set-MockScenario @{ replies = @("Fine.") }
+            Invoke-Ask @("hi", "-NoTools", "-NoHistory") | Out-Null
+            Get-SystemPrompt (Get-Chats)[0] | Should -Not -Match "local date and time"
+        }
     }
 }
